@@ -491,6 +491,7 @@ class DataFetcherManager:
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us"},
         "LongbridgeFetcher": {"hk", "us"},
+        "PolygonFetcher": {"us"},
     }
     
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
@@ -908,6 +909,10 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         longbridge = LongbridgeFetcher()  # 长桥（美股/港股兜底，懒加载）
+
+        if polygon_key and market == "us":
+            from .polygon_fetcher import PolygonFetcher
+            fetchers.append(PolygonFetcher())
 
         # 初始化数据源列表
         self._ensure_concurrency_guards()

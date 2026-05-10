@@ -14,7 +14,12 @@
 import re
 
 # 美股代码正则：1-5 个大写字母，可选 .X 后缀（如 BRK.B）
-_US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
+_US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z]{1,2})?$')
+
+_US_STOCK_KNOWN_LIST = {
+    'SPY', 'QQQ', 'IWM', 'VOO', 'VTI', 'TLT', 'GLD', 'SLV', 'USO',
+    'BRK.A', 'BRK.B', 'BF.A', 'BF.B', 'RDS.A', 'RDS.B',
+}
 
 
 # 用户输入 -> (Yahoo Finance 符号, 中文名称)
@@ -87,6 +92,10 @@ def is_us_stock_code(code: str) -> bool:
         >>> is_us_stock_code('600519')
         False
     """
+
+    if code.upper() in _US_STOCK_KNOWN_LIST:
+        return True
+
     normalized = (code or '').strip().upper()
     # 美股指数不是股票
     if normalized in US_INDEX_MAPPING:

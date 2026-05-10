@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse
-from data_provider.base import canonical_stock_code
+# from data_provider.base import canonical_stock_code
 from src.config import get_config
 from src.storage import get_db
 
@@ -86,6 +86,7 @@ class AskCommand(BotCommand):
         return raw_code_str, rest_args
 
     def _parse_stock_codes(self, raw: str) -> List[str]:
+        from data_provider.base import canonical_stock_code
         """Parse one or more stock codes from the first argument."""
         parts = [p.strip().upper() for p in raw.replace("，", ",").split(",") if p.strip()]
         return [canonical_stock_code(part) for part in parts]
