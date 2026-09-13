@@ -14,6 +14,8 @@
 3. 指数退避重试机制
 """
 
+from src.time_utils import beijing_now_naive
+
 import logging
 import random
 import time
@@ -352,7 +354,7 @@ class BaseFetcher(ABC):
         """
         # 计算日期范围
         if end_date is None:
-            end_date = datetime.now().strftime('%Y-%m-%d')
+            end_date = beijing_now_naive().strftime('%Y-%m-%d')
         
         if start_date is None:
             # 默认获取最近 30 个交易日（按日历日估算，多取一些）
@@ -418,14 +420,16 @@ class BaseFetcher(ABC):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # 去除关键列为空的行
-        df = df.dropna(subset=['close', 'volume'])
+        df = df.replace([float('inf'), -float('inf')], float('nan')).dropna(subset=['close', 'volume'])
+        df = df.loc[(df['close'] > 0) & (df['volume'] >= 0)]
         
         # 按日期升序排序
-        df = df.sort_values('date', ascending=True).reset_index(drop=True)
+        df = df.sort_values('date', ascending=True).drop_duplicates('date', keep='last').reset_index(drop=True)
         
         return df
     
-    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def _calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         """
         计算技术指标
         
@@ -436,22 +440,24 @@ class BaseFetcher(ABC):
         df = df.copy()
         
         # 移动平均线
-        df['ma5'] = df['close'].rolling(window=5, min_periods=1).mean()
-        df['ma10'] = df['close'].rolling(window=10, min_periods=1).mean()
-        df['ma20'] = df['close'].rolling(window=20, min_periods=1).mean()
+        if 'volume' not in df:
+            df['volume'] = float('nan')
+        df['ma5'] = df['close'].rolling(window=5).mean()
+        df['ma10'] = df['close'].rolling(window=10).mean()
+        df['ma20'] = df['close'].rolling(window=20).mean()
         
         # 量比：当日成交量 / 5日平均成交量
         # 注意：此处的 volume_ratio 是“日线成交量 / 前5日均量(shift 1)”的相对倍数，
         # 与部分交易软件口径的“分时量比（同一时刻对比）”不同，含义更接近“放量倍数”。
         # 该行为目前保留（按需求不改逻辑）。
-        avg_volume_5 = df['volume'].rolling(window=5, min_periods=1).mean()
-        df['volume_ratio'] = df['volume'] / avg_volume_5.shift(1)
-        df['volume_ratio'] = df['volume_ratio'].fillna(1.0)
+        avg_volume_5 = df['volume'].rolling(window=5).mean().shift(1)
+        df['volume_ratio'] = df['volume'] / avg_volume_5.where(avg_volume_5 > 0)
+        if 'data_source' in df:
+            for offset in range(1, 6):
+                df['volume_ratio'] = df['volume_ratio'].where(df['data_source'].eq(df['data_source'].shift(offset)))
         
         # 保留2位小数
-        for col in ['ma5', 'ma10', 'ma20', 'volume_ratio']:
-            if col in df.columns:
-                df[col] = df[col].round(2)
+        # Preserve precision; round only at presentation boundaries.
         
         return df
     
@@ -901,6 +907,7 @@ class DataFetcherManager:
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
         from .longbridge_fetcher import LongbridgeFetcher
+        from .polygon_fetcher import PolygonFetcher
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
@@ -909,10 +916,8 @@ class DataFetcherManager:
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
         longbridge = LongbridgeFetcher()  # 长桥（美股/港股兜底，懒加载）
+        polygon = PolygonFetcher()  # Polygon（美股数据源）
 
-        if polygon_key and market == "us":
-            from .polygon_fetcher import PolygonFetcher
-            fetchers.append(PolygonFetcher())
 
         # 初始化数据源列表
         self._ensure_concurrency_guards()
@@ -925,6 +930,7 @@ class DataFetcherManager:
                 baostock,
                 yfinance,
                 longbridge,
+                polygon,
             ]
 
             # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
@@ -946,7 +952,10 @@ class DataFetcherManager:
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        source: Optional[str] = None,
+        min_records: Optional[int] = None,
+        diagnostics: Optional[list] = None,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -976,8 +985,23 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
 
         fetchers = self._get_fetchers_snapshot()
+        attempts = diagnostics if diagnostics is not None else []
+        if source:
+            fetchers = [fetcher for fetcher in fetchers if fetcher.name == source]
+            if not fetchers:
+                attempts.append({"source": source, "status": "unavailable"})
+                raise ValueError("Requested daily-history source is not available")
         errors = []
         request_start = time.time()
+        # ETF long histories need an ETF-specific endpoint before generic fallbacks.
+        etf_history_start = None
+        if _is_etf_code(stock_code):
+            requested_end = pd.Timestamp(end_date or beijing_now_naive().date())
+            requested_start = pd.Timestamp(start_date) if start_date else requested_end - pd.Timedelta(days=days * 2)
+            if (requested_end - requested_start).days > 365:
+                etf_history_start = requested_start
+                fetchers.sort(key=lambda f: f.name != "AkshareFetcher")
+        partial_history = None
 
         # 快速路径：美股使用专用数据源路由；港股先过滤不支持港股日线的数据源
         #   - 配置长桥凭据后: Longbridge 为首选, YFinance/AkShare 兜底
@@ -988,10 +1012,14 @@ class DataFetcherManager:
         is_hk = (not is_us) and _is_hk_market(stock_code)
         if is_hk:
             fetchers = self._filter_daily_fetchers_for_market(fetchers, "hk")
+        if is_us and min_records is not None and not source:
+            prefer_lb = self._longbridge_preferred() and not is_us_index
+            order = ["LongbridgeFetcher", "YfinanceFetcher"] if prefer_lb else ["YfinanceFetcher", "LongbridgeFetcher"]
+            fetchers = [fetcher for name in order for fetcher in fetchers if fetcher.name == name]
         total_fetchers = len(fetchers)
 
         # 美股（含美股指数）使用 Longbridge/YFinance 特殊路由；港股走下方通用数据源循环
-        if is_us:
+        if is_us and not source and min_records is None:
             prefer_lb = self._longbridge_preferred() and not is_us_index
             source_order = (
                 ["LongbridgeFetcher", "YfinanceFetcher"]
@@ -1053,6 +1081,33 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
+                    if "date" in df.columns and (min_records is not None or source):
+                        dates = pd.to_datetime(df["date"], errors="coerce")
+                        df = df.loc[dates.notna()].copy()
+                        df["date"] = dates[dates.notna()]
+                        if start_date:
+                            df = df.loc[df["date"] >= pd.Timestamp(start_date)]
+                        if end_date:
+                            df = df.loc[df["date"] <= pd.Timestamp(end_date)]
+                        df = df.sort_values("date").drop_duplicates("date", keep="last")
+                    attempt_info = {"source": fetcher.name, "status": "returned", "records": len(df)}
+                    attempts.append(attempt_info)
+                    if min_records is not None and (len(df) < min_records or "date" not in df.columns):
+                        attempt_info["status"] = "insufficient_data"
+                        if "date" in df.columns and (partial_history is None or len(df) > len(partial_history[0])):
+                            partial_history = (df, fetcher.name)
+                        continue
+                    if etf_history_start is not None and min_records is None and "date" in df.columns:
+                        first_date = pd.to_datetime(df["date"], errors="coerce").min()
+                        if pd.isna(first_date) or first_date > etf_history_start + pd.Timedelta(days=10):
+                            attempt_info["status"] = "insufficient_date_range"
+                            if partial_history is None or len(df) > len(partial_history[0]):
+                                partial_history = (df, fetcher.name)
+                            logger.warning(
+                                "[历史覆盖不足] %s [%s] first_date=%s requested_start=%s; continuing fallback",
+                                stock_code, fetcher.name, first_date, etf_history_start,
+                            )
+                            continue
                     elapsed = time.time() - request_start
                     logger.info(
                         f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
@@ -1060,7 +1115,10 @@ class DataFetcherManager:
                     )
                     return df, fetcher.name
                     
+                else:
+                    attempts.append({"source": fetcher.name, "status": "empty", "records": 0})
             except Exception as e:
+                attempts.append({"source": fetcher.name, "status": "error", "error_type": type(e).__name__})
                 error_type, error_reason = summarize_exception(e)
                 error_msg = f"[{fetcher.name}] ({error_type}) {error_reason}"
                 logger.warning(
@@ -1074,6 +1132,10 @@ class DataFetcherManager:
                 # 继续尝试下一个数据源
                 continue
         
+        if partial_history is not None:
+            logger.warning("[历史覆盖不足] %s 无完整区间，返回最长可用历史 [%s]", stock_code, partial_history[1])
+            return partial_history
+
         # 所有数据源都失败
         error_summary = f"所有数据源获取 {stock_code} 失败:\n" + "\n".join(errors)
         elapsed = time.time() - request_start
@@ -1363,6 +1425,8 @@ class DataFetcherManager:
                 val = getattr(secondary, f, None)
                 if val is not None:
                     setattr(primary, f, val)
+                    if hasattr(primary, "field_sources") and hasattr(secondary, "provenance"):
+                        primary.field_sources[f] = secondary.provenance()["field_sources"].get(f, {})
                     filled.append(f)
         return filled
 
@@ -2091,7 +2155,7 @@ class DataFetcherManager:
         }
         valuation_status = self._infer_block_status(
             valuation_payload,
-            "partial" if quote_payload is not None else "not_supported",
+            "partial" if quote_payload is not None else ("failed" if valuation_err else "not_supported"),
         )
         if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(valuation_payload):
             valuation_status = "failed"

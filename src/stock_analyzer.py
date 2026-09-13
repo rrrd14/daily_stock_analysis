@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from enum import Enum
 
 import pandas as pd
@@ -93,7 +93,7 @@ class TrendAnalysisResult:
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
-    ma60: float = 0.0
+    ma60: Optional[float] = None
     current_price: float = 0.0
     
     # 乖离率（与 MA5 的偏离度）
@@ -103,7 +103,7 @@ class TrendAnalysisResult:
     
     # 量能分析
     volume_status: VolumeStatus = VolumeStatus.NORMAL
-    volume_ratio_5d: float = 0.0     # 当日成交量/5日均量
+    volume_ratio_5d: Optional[float] = None  # 当日成交量/前5日均量
     volume_trend: str = ""           # 量能趋势描述
     
     # 支撑压力
@@ -113,16 +113,16 @@ class TrendAnalysisResult:
     support_levels: List[float] = field(default_factory=list)
 
     # MACD 指标
-    macd_dif: float = 0.0          # DIF 快线
-    macd_dea: float = 0.0          # DEA 慢线
-    macd_bar: float = 0.0           # MACD 柱状图
+    macd_dif: Optional[float] = None          # DIF 快线
+    macd_dea: Optional[float] = None          # DEA 慢线
+    macd_bar: Optional[float] = None           # MACD 柱状图
     macd_status: MACDStatus = MACDStatus.BULLISH
     macd_signal: str = ""            # MACD 信号描述
 
     # RSI 指标
-    rsi_6: float = 0.0              # RSI(6) 短期
-    rsi_12: float = 0.0             # RSI(12) 中期
-    rsi_24: float = 0.0             # RSI(24) 长期
+    rsi_6: Optional[float] = None              # RSI(6) 短期
+    rsi_12: Optional[float] = None             # RSI(12) 中期
+    rsi_24: Optional[float] = None             # RSI(24) 长期
     rsi_status: RSIStatus = RSIStatus.NEUTRAL
     rsi_signal: str = ""              # RSI 信号描述
 
@@ -236,7 +236,9 @@ class StockTrendAnalyzer:
         result.ma5 = float(latest['MA5'])
         result.ma10 = float(latest['MA10'])
         result.ma20 = float(latest['MA20'])
-        result.ma60 = float(latest.get('MA60', 0))
+        result.ma60 = float(latest['MA60']) if pd.notna(latest['MA60']) else None
+        if result.ma60 is None:
+            result.risk_factors.append("不足60条行情，MA60不可用")
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -270,7 +272,7 @@ class StockTrendAnalyzer:
         if len(df) >= 60:
             df['MA60'] = df['close'].rolling(window=60).mean()
         else:
-            df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+            df['MA60'] = np.nan
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -328,7 +330,7 @@ class StockTrendAnalyzer:
             rsi = 100 - (100 / (1 + rs))
 
             # 填充 NaN 值
-            rsi = rsi.fillna(50)  # 默认中性值
+            rsi = rsi.where((avg_gain + avg_loss) != 0, 50)  # 完整窗口内横盘才记中性值
 
             # 添加到 DataFrame
             col_name = f'RSI_{period}'
@@ -412,14 +414,24 @@ class StockTrendAnalyzer:
         
         偏好：缩量回调 > 放量上涨 > 缩量上涨 > 放量下跌
         """
-        if len(df) < 5:
+        if len(df) < 6:
             return
         
         latest = df.iloc[-1]
         vol_5d_avg = df['volume'].iloc[-6:-1].mean()
+        latest_volume = latest['volume']
         
-        if vol_5d_avg > 0:
-            result.volume_ratio_5d = float(latest['volume']) / vol_5d_avg
+        source_mixed = 'data_source' in df and df['data_source'].iloc[-6:].nunique(dropna=False) > 1
+        if (
+            source_mixed
+            or not np.isfinite(vol_5d_avg)
+            or vol_5d_avg <= 0
+            or not np.isfinite(latest_volume)
+        ):
+            result.volume_trend = "成交量来源混合或量能数据无效，无法计算放量倍数"
+            result.risk_factors.append(result.volume_trend)
+            return
+        result.volume_ratio_5d = float(latest_volume) / vol_5d_avg
         
         # 判断价格变化
         prev_close = df.iloc[-2]['close']
@@ -494,12 +506,31 @@ class StockTrendAnalyzer:
         prev = df.iloc[-2]
 
         # 获取 MACD 数据
-        result.macd_dif = float(latest['MACD_DIF'])
-        result.macd_dea = float(latest['MACD_DEA'])
-        result.macd_bar = float(latest['MACD_BAR'])
+        macd_dif = latest['MACD_DIF']
+        macd_dea = latest['MACD_DEA']
+        macd_bar = latest['MACD_BAR']
+        prev_dif = prev['MACD_DIF']
+        prev_dea = prev['MACD_DEA']
+
+        # NaN 防御：close 序列存在缺口时 MACD 可能为 NaN，
+        # 若直接参与比较会静默落入「中性区域」分支，产生错误信号。
+        if not (
+            np.isfinite(macd_dif)
+            and np.isfinite(macd_dea)
+            and np.isfinite(macd_bar)
+            and np.isfinite(prev_dif)
+            and np.isfinite(prev_dea)
+        ):
+            result.macd_signal = "MACD 数据无效（存在缺失值）"
+            result.risk_factors.append(result.macd_signal)
+            return
+
+        result.macd_dif = float(macd_dif)
+        result.macd_dea = float(macd_dea)
+        result.macd_bar = float(macd_bar)
 
         # 判断金叉死叉
-        prev_dif_dea = prev['MACD_DIF'] - prev['MACD_DEA']
+        prev_dif_dea = prev_dif - prev_dea
         curr_dif_dea = result.macd_dif - result.macd_dea
 
         # 金叉：DIF 上穿 DEA
@@ -556,9 +587,24 @@ class StockTrendAnalyzer:
         latest = df.iloc[-1]
 
         # 获取 RSI 数据
-        result.rsi_6 = float(latest[f'RSI_{self.RSI_SHORT}'])
-        result.rsi_12 = float(latest[f'RSI_{self.RSI_MID}'])
-        result.rsi_24 = float(latest[f'RSI_{self.RSI_LONG}'])
+        rsi_short = latest[f'RSI_{self.RSI_SHORT}']
+        rsi_mid_val = latest[f'RSI_{self.RSI_MID}']
+        rsi_long = latest[f'RSI_{self.RSI_LONG}']
+
+        # NaN 防御：close 序列存在缺口时 RSI 可能为 NaN，
+        # 若直接参与比较会静默落入「超卖」分支，产生错误信号。
+        if not (
+            np.isfinite(rsi_short)
+            and np.isfinite(rsi_mid_val)
+            and np.isfinite(rsi_long)
+        ):
+            result.rsi_signal = "RSI 数据无效（存在缺失值）"
+            result.risk_factors.append(result.rsi_signal)
+            return
+
+        result.rsi_6 = float(rsi_short)
+        result.rsi_12 = float(rsi_mid_val)
+        result.rsi_24 = float(rsi_long)
 
         # 以中期 RSI(12) 为主进行判断
         rsi_mid = result.rsi_12
@@ -767,19 +813,19 @@ class StockTrendAnalyzer:
             f"   MA20: {result.ma20:.2f} (乖离 {result.bias_ma20:+.2f}%)",
             f"",
             f"📊 量能分析: {result.volume_status.value}",
-            f"   量比(vs5日): {result.volume_ratio_5d:.2f}",
+            f"   放量倍数(vs前5日): {f'{result.volume_ratio_5d:.2f}' if result.volume_ratio_5d is not None else '数据不足'}",
             f"   量能趋势: {result.volume_trend}",
             f"",
             f"📈 MACD指标: {result.macd_status.value}",
-            f"   DIF: {result.macd_dif:.4f}",
-            f"   DEA: {result.macd_dea:.4f}",
-            f"   MACD: {result.macd_bar:.4f}",
+            f"   DIF: {format(result.macd_dif, '.4f') if result.macd_dif is not None else '数据不足'}",
+            f"   DEA: {format(result.macd_dea, '.4f') if result.macd_dea is not None else '数据不足'}",
+            f"   MACD: {format(result.macd_bar, '.4f') if result.macd_bar is not None else '数据不足'}",
             f"   信号: {result.macd_signal}",
             f"",
             f"📊 RSI指标: {result.rsi_status.value}",
-            f"   RSI(6): {result.rsi_6:.1f}",
-            f"   RSI(12): {result.rsi_12:.1f}",
-            f"   RSI(24): {result.rsi_24:.1f}",
+            f"   RSI(6): {format(result.rsi_6, '.1f') if result.rsi_6 is not None else '数据不足'}",
+            f"   RSI(12): {format(result.rsi_12, '.1f') if result.rsi_12 is not None else '数据不足'}",
+            f"   RSI(24): {format(result.rsi_24, '.1f') if result.rsi_24 is not None else '数据不足'}",
             f"   信号: {result.rsi_signal}",
             f"",
             f"🎯 操作建议: {result.buy_signal.value}",
