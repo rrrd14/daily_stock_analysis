@@ -17,7 +17,8 @@ class _FakeJob:
     def day(self):
         return self
 
-    def at(self, value):
+    def at(self, value, timezone=None):
+        self.timezone = timezone
         self.at_time = value
         hour, minute = [int(part) for part in value.split(":")]
         self.next_run = datetime(2026, 1, 1, hour, minute, 0)

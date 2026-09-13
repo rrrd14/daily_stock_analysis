@@ -1,5 +1,15 @@
 # 📖 完整配置与部署指南
 
+## 回测运行证据（第一阶段）
+
+历史行情工具现在可指定来源，例如 `get_daily_history(stock_code="588000", days=750, source="YfinanceFetcher")`。指定 `source` 时绕过缓存，仅访问该来源，不会偷偷切换；省略时自动降级，长窗口在返回条数不足时继续寻找其他来源。`source_attempts` 返回来源、状态、条数或异常类型，失败不代表标的没有更早历史。`coverage_complete` 仅表示满足请求条数，750 个交易日不等于严格三个自然年；仍需核对起止日期、复权和连续性。此参数属于聊天工具/服务层，并未新增 Web 数据源下拉框。使用新参数必须更新运行中的镜像。
+
+回测页触发评估后会显示程序运行卡片，也可从“最近的程序运行记录”查看历史。展开卡片可核对参数、实际行情日期/来源/条数及逐条结果，并下载 JSON。聊天可使用 `get_backtest_run` 查询最近运行（不传编号）或指定运行，并引用 `/backtest?run=<run_id>` 链接；卡片独立从后端读取，正文仍是 AI 解读。此工具只读，不会触发回测。
+
+`POST /api/v1/backtest/run` 在原计数响应中追加 `run_id`、`status`；`GET /api/v1/backtest/runs` 列出最近 20 次运行，`GET /api/v1/backtest/runs/{run_id}` 返回证据。`empty` 表示没有候选，`partial` 表示存在数据不足/错误，`failed` 表示执行异常，`running` 也可能是进程中断遗留；只有全部评估完成才为 `completed`。这些状态不证明行情完整或策略有效。
+
+现有引擎是 AI 报告事后评估，未建模组合资金、手续费、滑点；不能将平均单条收益解释为三年账户收益。复权与历史时点可得性未验证，条数满足不代表交易日连续。新表 `backtest_runs` 自动增量创建，旧记录没有快照；重算不会改写已完成证据。SHA256 用于内容核对，不是防篡改签名。运行记录持续增长，部署前备份数据库，回滚代码时保留新表即可。设计见 [第一阶段设计](architecture/quant-verifiability-phase1.md)。
+
 本文档包含 A股智能分析系统的完整配置说明，适合需要高级功能或特殊部署方式的用户。
 
 > 💡 快速上手请参考 [README.md](../README.md)，本文档为进阶配置。
@@ -1057,6 +1067,30 @@ python main.py --debug
 | `take_profit_trigger_rate` | 止盈触发率（仅统计配置了止盈的记录） |
 
 ---
+
+### 回测空结果与技能归属
+
+容器排障补充：`--serve-only` 仅启动服务，需要通过回测页面、API 或 CLI 主动触发回测；它不会执行每日分析结束后的自动回测。长期 ETF 行情优先使用 AkShare；若返回起始日期明显晚于请求范围，会继续尝试后续来源，最终仍可降级返回最长的部分历史。Polygon 的 `DELAYED` 是可处理的行情状态，实际历史长度仍需核对。Docker 镜像需重建以应用 Efinance 包内数据缓存目录的非 root 写权限修复；该授权仅限缓存目录。
+
+
+- 实际表名为 `analysis_history`、`backtest_results`、`backtest_summaries`。查询为空不能证明回测从未运行：也可能没有足够早的分析记录、查询窗口不匹配，或行情不足。
+- Agent 的三个回测工具省略 `eval_window_days` 时跟随 `BACKTEST_EVAL_WINDOW_DAYS`，显式传值仍按指定窗口查询；查询工具不会触发回测。汇总表缺失但结果存在时，查询可直接从结果计算汇总。
+- 每日分析完成后按 `BACKTEST_ENABLED` 自动评估；仅启动 API 不会因此启动每日分析。可运行 `python main.py --backtest`，或调用 `POST /api/v1/backtest/run`。普通运行会重试 `insufficient_data` / `error`，已完成记录只有强制运行才重算。
+- 技能汇总按新报告 `raw_result.analysis_skill_ids` 中明确的单技能归属聚合，指标沿用现有回测引擎。未标记的旧报告、多技能联合报告和多 Agent 决策不归因到单个技能；不会拿整体收益替代技能收益。能力已支持但无归属记录时，工具返回 `supported: true, status: no_data`。旧报告无法可靠补推技能标签。
+- `get_daily_history` 最多请求 1260 个交易日；超过 365 日的请求会检查完整缓存并按明确日期范围取数。返回 `coverage_complete`、`start_date`、`end_date`，覆盖不足时不能当作完整区间收益。AkShare 已通过 `fund_etf_hist_em` 获取 ETF 日线，数据源失败切换仍保留；实际历史覆盖须在线验证。
+- 本模块评估历史 AI 报告之后若干交易日的表现，不会从三年行情凭空生成三年的历史 AI 信号。比较三年收益还需明确价格复权、共同交易日期和基准。
+
+只读检查示例（在实际运行环境的数据库执行）：
+
+```sql
+SELECT COUNT(*) FROM analysis_history;
+SELECT eval_window_days, engine_version, eval_status, COUNT(*)
+FROM backtest_results GROUP BY eval_window_days, engine_version, eval_status;
+SELECT scope, code, eval_window_days, total_evaluations FROM backtest_summaries;
+SELECT code, COUNT(*), MIN(date), MAX(date) FROM stock_daily
+WHERE code IN ('588000', '601398') GROUP BY code;
+```
+
 
 ## 本地 WebUI 管理界面
 

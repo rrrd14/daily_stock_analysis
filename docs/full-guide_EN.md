@@ -1,5 +1,15 @@
 # Complete Configuration & Deployment Guide
 
+## Backtest execution evidence (phase one)
+
+Historical data now accepts an explicit provider, e.g. `get_daily_history(stock_code="588000", days=750, source="YfinanceFetcher")`. An explicit source bypasses the cache and uses only that provider. Omitting it enables automatic fallback; long requests continue when the unique returned bar count is insufficient. `source_attempts` reports providers, status, counts or exception types. A provider failure does not establish that older history does not exist. `coverage_complete` checks count only: 750 trading days are not exactly three calendar years. Verify dates, adjustment and continuity separately. This is a chat-tool/service parameter, not a new Web dropdown; deploy the updated image to use it.
+
+The backtest page displays an execution card after running an evaluation and lists the latest runs. Expand a card to inspect parameters, actual bar dates/sources/counts and individual results, or download the JSON evidence. The read-only agent tool `get_backtest_run` lists recent executions when called without an ID, or reads a specific run and returns `/backtest?run=<run_id>`. Chat cards fetch server records independently; assistant prose remains AI interpretation. The tool does not execute backtests.
+
+`POST /api/v1/backtest/run` adds `run_id` and `status` to existing counters. `GET /api/v1/backtest/runs` lists the latest 20 runs; `GET /api/v1/backtest/runs/{run_id}` returns evidence. Statuses are `empty` (no candidates), `partial` (insufficient data/errors), `failed` (execution exception), `running` (possibly interrupted), and `completed` (all evaluations completed). Completion does not certify data coverage or strategy validity.
+
+This engine evaluates past AI reports, not portfolio equity. Capital, fees and slippage are not modeled; average report returns are not three-year account returns. Adjustment and point-in-time availability are unverified; bar count does not establish trading-calendar continuity. The additive `backtest_runs` table is created automatically. Older evaluations have no snapshots; reruns preserve finalized evidence. SHA256 is a content checksum, not a tamper-proof signature. Monitor database growth and back up before deployment; application rollback can leave the new table intact. The detailed internal design is maintained in Chinese at [phase-one design](architecture/quant-verifiability-phase1.md); this section documents the matching public contract.
+
 This document contains the complete configuration guide for the AI Stock Analysis System, intended for users who need advanced features or special deployment methods.
 
 > Quick start guide available in [README_EN.md](README_EN.md). This document covers advanced configuration.
@@ -903,6 +913,22 @@ Backtesting triggers automatically after the daily analysis flow completes (non-
 | `take_profit_trigger_rate` | Take-profit trigger rate (only counts records with TP configured) |
 
 ---
+
+### Empty results and skill attribution
+
+Container troubleshooting: `--serve-only` starts the API but does not execute automatic backtests at the end of daily analysis. Trigger backtests from the UI, API, or CLI. Long ETF histories prefer AkShare; late starting dates continue through fallback providers, retaining the longest partial response if none covers the requested start. Polygon `DELAYED` responses are accepted, but historical coverage must still be checked. Rebuild the Docker image to grant its non-root user write access to the Efinance data cache directory only.
+
+
+The actual tables are `analysis_history`, `backtest_results`, and `backtest_summaries`. Empty queries may indicate no eligible old analyses, a different evaluation window, or insufficient prices; they do not prove backtesting never ran.
+
+Agent backtest tools use `BACKTEST_EVAL_WINDOW_DAYS` when the window is omitted. Explicit windows remain exact; reads never run backtests. Missing rollups can be computed from existing results. Daily analysis runs automatic backtests when enabled; API-only mode does not start daily analysis. Use `python main.py --backtest` or `POST /api/v1/backtest/run` to run manually. Normal runs retry incomplete/error evaluations, while completed evaluations require force to rerun.
+
+Skill summaries use explicitly single-skill `raw_result.analysis_skill_ids` attribution saved with new reports. Untagged legacy reports, combined-skill reports, and multi-agent decisions are excluded from individual skill metrics. Overall returns are never substituted. A supported lookup without attributed records returns `supported: true, status: no_data`; legacy attribution cannot be reliably inferred.
+
+`get_daily_history` supports up to 1260 trading days. Requests over 365 days require full cache coverage or fetch an explicit date range. Inspect `coverage_complete`, `start_date`, and `end_date` before comparing returns. AkShare already uses `fund_etf_hist_em` for ETFs; provider fallback remains enabled and actual historical coverage requires online verification.
+
+This backtest evaluates saved AI reports over subsequent trading days. Three years of prices do not create three years of historical AI signals. Long-term return comparisons additionally require consistent adjustment and shared trading dates.
+
 
 ## Local WebUI Management Interface
 

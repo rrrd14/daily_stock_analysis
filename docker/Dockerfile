@@ -44,6 +44,10 @@ COPY requirements.txt .
 # 安装 Python 依赖
 RUN pip install --no-cache-dir -r requirements.txt
 
+# efinance writes its search cache inside its package, including at import time.
+# Grant only that data directory to the runtime user; keep package code read-only.
+RUN python -c "from pathlib import Path; from importlib.util import find_spec; import shutil; cache = Path(find_spec('efinance').origin).parent / 'data'; cache.mkdir(exist_ok=True); [shutil.chown(p, user='dsa', group='dsa') for p in [cache, *cache.rglob('*')]]"
+
 # 复制应用代码
 COPY *.py ./
 COPY api/ ./api/
