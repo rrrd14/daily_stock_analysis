@@ -5,6 +5,7 @@ Conversation Manager for Agent multi-turn chat.
 Manages conversation sessions with TTL, storing message history and context.
 """
 
+from src.time_utils import beijing_now_naive
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -20,18 +21,18 @@ class ConversationSession:
     """A single multi-turn conversation session."""
     session_id: str
     context: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.now)
-    last_active: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=beijing_now_naive)
+    last_active: datetime = field(default_factory=beijing_now_naive)
 
     def add_message(self, role: str, content: str):
         """Add a message to the session history."""
         get_db().save_conversation_message(self.session_id, role, content)
-        self.last_active = datetime.now()
+        self.last_active = beijing_now_naive()
 
     def update_context(self, key: str, value: Any):
         """Update session context."""
         self.context[key] = value
-        self.last_active = datetime.now()
+        self.last_active = beijing_now_naive()
 
     def get_history(self) -> List[Dict[str, Any]]:
         """Get message history."""
@@ -56,7 +57,7 @@ class ConversationManager:
                 logger.info(f"Created new conversation session: {session_id}")
             else:
                 # Update last active time
-                self._sessions[session_id].last_active = datetime.now()
+                self._sessions[session_id].last_active = beijing_now_naive()
 
             return self._sessions[session_id]
 
@@ -82,7 +83,7 @@ class ConversationManager:
     def _cleanup_expired(self):
         """Remove expired sessions."""
         with self._lock:
-            now = datetime.now()
+            now = beijing_now_naive()
             expired = [
                 sid for sid, session in self._sessions.items()
                 if now - session.last_active > self.ttl

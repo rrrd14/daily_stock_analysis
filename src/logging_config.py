@@ -10,6 +10,7 @@
 3. 自动降低第三方库日志级别
 """
 
+from src.time_utils import beijing_now_naive
 import logging
 import os
 import sys
@@ -113,7 +114,7 @@ def setup_logging(
     log_path.mkdir(parents=True, exist_ok=True)
 
     # 日志文件路径（按日期分文件）
-    today_str = datetime.now().strftime('%Y%m%d')
+    today_str = beijing_now_naive().strftime('%Y%m%d')
     log_file = log_path / f"{log_prefix}_{today_str}.log"
     debug_log_file = log_path / f"{log_prefix}_debug_{today_str}.log"
 
@@ -129,6 +130,8 @@ def setup_logging(
     rel_formatter = RelativePathFormatter(
         LOG_FORMAT, LOG_DATE_FORMAT, relative_to=project_root
     )
+    from src.time_utils import BEIJING
+    rel_formatter.converter = lambda timestamp: datetime.fromtimestamp(timestamp, BEIJING).timetuple()
     # Handler 1: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)

@@ -10,6 +10,7 @@
 3. 使用大模型生成每日大盘复盘报告
 """
 
+from src.time_utils import beijing_now_naive
 import logging
 import time
 from dataclasses import dataclass, field
@@ -284,7 +285,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             MarketOverview: 市场概览数据对象
         """
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = beijing_now_naive().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
@@ -1111,7 +1112,7 @@ Market conditions can change quickly. The data above is for reference only and d
 {self._get_strategy_markdown_block(template_language)}
 
 ---
-*Review Time: {datetime.now().strftime('%H:%M')}*
+*Review Time: {beijing_now_naive().strftime('%H:%M')}*
 """
             return report
 
@@ -1149,7 +1150,7 @@ Market conditions can change quickly. The data above is for reference only and d
 - 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
 
 ---
-*复盘时间: {datetime.now().strftime('%H:%M')}*
+*复盘时间: {beijing_now_naive().strftime('%H:%M')}*
 """
     
     def run_daily_review(self) -> str:

@@ -21,6 +21,7 @@ A股自选股智能分析系统 - 主调度程序
 - 效率优先：关注筹码集中度好的股票
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
+from src.time_utils import beijing_now_naive
 import os
 from pathlib import Path
 from typing import Dict, Optional
@@ -747,7 +748,7 @@ def main() -> int:
 
     logger.info("=" * 60)
     logger.info("A股自选股智能分析系统 启动")
-    logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"运行时间: {beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
     # 验证配置

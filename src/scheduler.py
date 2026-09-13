@@ -13,6 +13,7 @@
 - schedule: 轻量级定时任务库
 """
 
+from src.time_utils import beijing_now_naive
 import logging
 import re
 import signal
@@ -140,7 +141,7 @@ class Scheduler:
 
         previous_time = self.schedule_time
         self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
+        self._daily_job = self.schedule.every().day.at(candidate, "Asia/Shanghai").do(self._safe_run_task)
         self.schedule_time = candidate
 
         if previous_time == candidate:
@@ -177,12 +178,12 @@ class Scheduler:
 
         try:
             logger.info("=" * 50)
-            logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"定时任务开始执行 - {beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("=" * 50)
 
             self._task_callback()
 
-            logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"定时任务执行完成 - {beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}")
 
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
@@ -287,7 +288,7 @@ class Scheduler:
             time.sleep(30)  # 每30秒检查一次
 
             # 每小时打印一次心跳
-            if datetime.now().minute == 0 and datetime.now().second < 30:
+            if beijing_now_naive().minute == 0 and beijing_now_naive().second < 30:
                 logger.info(f"调度器运行中... 下次执行: {self._get_next_run_time()}")
 
         logger.info("调度器已停止")
@@ -297,7 +298,9 @@ class Scheduler:
         jobs = self.schedule.get_jobs()
         if jobs:
             next_run = min(job.next_run for job in jobs)
-            return next_run.strftime('%Y-%m-%d %H:%M:%S')
+            from src.time_utils import BEIJING
+            # schedule stores next_run as host-local naive time, even for timezone-aware jobs.
+            return next_run.astimezone(BEIJING).strftime('%Y-%m-%d %H:%M:%S %z')
         return "未设置"
 
     def stop(self):
@@ -348,7 +351,7 @@ if __name__ == "__main__":
     )
 
     def test_task():
-        print(f"任务执行中... {datetime.now()}")
+        print(f"任务执行中... {beijing_now_naive()}")
         time.sleep(2)
         print("任务完成!")
 

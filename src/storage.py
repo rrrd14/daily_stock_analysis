@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 存储层
 4. 实现智能更新逻辑（断点续传）
 """
 
+from src.time_utils import beijing_now_naive, beijing_today
 import atexit
 from contextlib import contextmanager
 import hashlib
@@ -104,8 +105,8 @@ class StockDaily(Base):
     data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
     
     # 更新时间
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=beijing_now_naive)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive)
     
     # 唯一约束：同一股票同一日期只能有一条数据
     __table_args__ = (
@@ -166,7 +167,7 @@ class NewsIntel(Base):
     published_date = Column(DateTime, index=True)
 
     # 入库时间
-    fetched_at = Column(DateTime, default=datetime.now, index=True)
+    fetched_at = Column(DateTime, default=beijing_now_naive, index=True)
     query_source = Column(String(32), index=True)  # bot/web/cli/system
     requester_platform = Column(String(20))
     requester_user_id = Column(String(64))
@@ -198,7 +199,7 @@ class FundamentalSnapshot(Base):
     payload = Column(Text, nullable=False)
     source_chain = Column(Text)
     coverage = Column(Text)
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     __table_args__ = (
         Index('ix_fundamental_snapshot_query_code', 'query_id', 'code'),
@@ -244,7 +245,7 @@ class AnalysisHistory(Base):
     stop_loss = Column(Float)
     take_profit = Column(Float)
 
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     __table_args__ = (
         Index('ix_analysis_code_time', 'code', 'created_at'),
@@ -273,6 +274,18 @@ class AnalysisHistory(Base):
         }
 
 
+class BacktestRun(Base):
+    """Append-only completed evidence; running rows may be finalized once."""
+
+    __tablename__ = "backtest_runs"
+    run_id = Column(String(32), primary_key=True)
+    created_at = Column(DateTime, nullable=False, default=beijing_now_naive)
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String(20), nullable=False, default="running")
+    payload = Column(Text, nullable=False)
+    sha256 = Column(String(64), nullable=True)
+
+
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""
 
@@ -297,7 +310,7 @@ class BacktestResult(Base):
 
     # 状态
     eval_status = Column(String(16), nullable=False, default='pending')
-    evaluated_at = Column(DateTime, default=datetime.now, index=True)
+    evaluated_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     # 建议快照（避免未来分析字段变化导致回测不可解释）
     operation_advice = Column(String(20))
@@ -353,7 +366,7 @@ class BacktestSummary(Base):
 
     eval_window_days = Column(Integer, nullable=False, default=10)
     engine_version = Column(String(16), nullable=False, default='v1')
-    computed_at = Column(DateTime, default=datetime.now, index=True)
+    computed_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     # 计数
     total_evaluations = Column(Integer, default=0)
@@ -408,8 +421,8 @@ class PortfolioAccount(Base):
     market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
     base_currency = Column(String(8), nullable=False, default='CNY')
     is_active = Column(Boolean, nullable=False, default=True, index=True)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive)
 
     __table_args__ = (
         Index('ix_portfolio_account_owner_active', 'owner_id', 'is_active'),
@@ -435,7 +448,7 @@ class PortfolioTrade(Base):
     tax = Column(Float, default=0.0)
     note = Column(String(255))
     dedup_hash = Column(String(64), index=True)
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     __table_args__ = (
         UniqueConstraint('account_id', 'trade_uid', name='uix_portfolio_trade_uid'),
@@ -456,7 +469,7 @@ class PortfolioCashLedger(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(8), nullable=False, default='CNY')
     note = Column(String(255))
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     __table_args__ = (
         Index('ix_portfolio_cash_account_date', 'account_id', 'event_date'),
@@ -478,7 +491,7 @@ class PortfolioCorporateAction(Base):
     cash_dividend_per_share = Column(Float)
     split_ratio = Column(Float)
     note = Column(String(255))
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
     __table_args__ = (
         Index('ix_portfolio_ca_account_date', 'account_id', 'effective_date'),
@@ -503,7 +516,7 @@ class PortfolioPosition(Base):
     market_value_base = Column(Float, nullable=False, default=0.0)
     unrealized_pnl_base = Column(Float, nullable=False, default=0.0)
     valuation_currency = Column(String(8), nullable=False, default='CNY')
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive, index=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -532,7 +545,7 @@ class PortfolioPositionLot(Base):
     remaining_quantity = Column(Float, nullable=False, default=0.0)
     unit_cost = Column(Float, nullable=False, default=0.0)
     source_trade_id = Column(Integer, ForeignKey('portfolio_trades.id'))
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive, index=True)
 
     __table_args__ = (
         Index('ix_portfolio_lot_account_symbol', 'account_id', 'symbol'),
@@ -558,8 +571,8 @@ class PortfolioDailySnapshot(Base):
     tax_total = Column(Float, nullable=False, default=0.0)
     fx_stale = Column(Boolean, nullable=False, default=False)
     payload = Column(Text)
-    created_at = Column(DateTime, default=datetime.now, index=True)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -583,7 +596,7 @@ class PortfolioFxRate(Base):
     rate = Column(Float, nullable=False)
     source = Column(String(32), nullable=False, default='manual')
     is_stale = Column(Boolean, nullable=False, default=False)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime, default=beijing_now_naive, onupdate=beijing_now_naive)
 
     __table_args__ = (
         UniqueConstraint(
@@ -605,7 +618,7 @@ class ConversationMessage(Base):
     session_id = Column(String(100), index=True, nullable=False)
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=beijing_now_naive, index=True)
 
 
 class LLMUsage(Base):
@@ -621,7 +634,7 @@ class LLMUsage(Base):
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
-    called_at = Column(DateTime, default=datetime.now, index=True)
+    called_at = Column(DateTime, default=beijing_now_naive, index=True)
 
 
 class DatabaseManager:
@@ -869,7 +882,7 @@ class DatabaseManager:
             是否存在数据
         """
         if target_date is None:
-            target_date = date.today()
+            target_date = beijing_today()
         # 注意：这里的 target_date 语义是“自然日”，而不是“最新交易日”。
         # 在周末/节假日/非交易日运行时，即使数据库已有最新交易日数据，这里也会返回 False。
         # 该行为目前保留（按需求不改逻辑）。
@@ -971,7 +984,7 @@ class DatabaseManager:
                     existing.snippet = snippet or existing.snippet
                     existing.source = source or existing.source
                     existing.published_date = published_date or existing.published_date
-                    existing.fetched_at = datetime.now()
+                    existing.fetched_at = beijing_now_naive()
 
                     if query_context:
                         if not existing.query_id and current_query_id:
@@ -1012,7 +1025,7 @@ class DatabaseManager:
                             url=url_key,
                             source=source,
                             published_date=published_date,
-                            fetched_at=datetime.now(),
+                            fetched_at=beijing_now_naive(),
                             query_id=current_query_id or None,
                             query_source=query_ctx.get("query_source"),
                             requester_platform=query_ctx.get("requester_platform"),
@@ -1128,7 +1141,7 @@ class DatabaseManager:
         """
         获取指定股票最近 N 天的新闻情报
         """
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = beijing_now_naive() - timedelta(days=days)
 
         with self.get_session() as session:
             results = session.execute(
@@ -1211,7 +1224,7 @@ class DatabaseManager:
                         secondary_buy=sniper_points.get("secondary_buy"),
                         stop_loss=sniper_points.get("stop_loss"),
                         take_profit=sniper_points.get("take_profit"),
-                        created_at=datetime.now(),
+                        created_at=beijing_now_naive(),
                     )
                 )
                 return 1
@@ -1239,7 +1252,7 @@ class DatabaseManager:
         - If query_id is not provided, apply days-based time filtering.
         - exclude_query_id: exclude records with this query_id (for history comparison).
         """
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = beijing_now_naive() - timedelta(days=days)
 
         with self.get_session() as session:
             conditions = []
@@ -1442,7 +1455,7 @@ class DatabaseManager:
             logger.warning(f"保存数据为空，跳过 {code}")
             return 0
 
-        now = datetime.now()
+        now = beijing_now_naive()
         records_by_date: Dict[date, Dict[str, Any]] = {}
         for row in df.to_dict(orient='records'):
             row_date = self._normalize_daily_date(row.get('date'))
@@ -1586,7 +1599,7 @@ class DatabaseManager:
             包含今日数据、昨日对比等信息的字典
         """
         if target_date is None:
-            target_date = date.today()
+            target_date = beijing_today()
         # 注意：尽管入参提供了 target_date，但当前实现实际使用的是“最新两天数据”（get_latest_data），
         # 并不会按 target_date 精确取当日/前一交易日的上下文。
         # 因此若未来需要支持“按历史某天复盘/重算”的可解释性，这里需要调整。
@@ -1710,6 +1723,7 @@ class DatabaseManager:
         data.update({
             'data_sources': getattr(result, 'data_sources', ''),
             'raw_response': getattr(result, 'raw_response', None),
+            'analysis_skill_ids': getattr(result, 'analysis_skill_ids', []),
         })
         return data
 
@@ -2152,7 +2166,7 @@ if __name__ == "__main__":
     
     # 测试保存数据
     test_df = pd.DataFrame({
-        'date': [date.today()],
+        'date': [beijing_today()],
         'open': [1800.0],
         'high': [1850.0],
         'low': [1780.0],
