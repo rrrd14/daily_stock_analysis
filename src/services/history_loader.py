@@ -8,6 +8,7 @@ Fixes #1066 – eliminates 45+ redundant HTTP requests per stock in Agent mode.
 """
 from __future__ import annotations
 
+from src.time_utils import beijing_today
 import contextvars
 import logging
 from datetime import date, datetime, timedelta
@@ -127,6 +128,7 @@ def load_history_df(
     stock_code: str,
     days: int = 60,
     target_date: Optional[date] = None,
+    source: Optional[str] = None,
 ) -> Tuple[Optional[pd.DataFrame], str]:
     """Load K-line history, DB first with DataFetcherManager fallback.
 
@@ -141,19 +143,25 @@ def load_history_df(
         end = target_date
     else:
         frozen = get_frozen_target_date()
-        end = frozen if frozen else date.today()
+        end = frozen if frozen else beijing_today()
 
     # Calendar-day buffer: ~1.8x trading days + margin for long holidays
     start = end - timedelta(days=int(days * 1.8) + 10)
 
     # --- 1. DB lookup (canonical code, then prefix-stripped fallback) ------
     try:
-        db = get_db()
-        _code, bars = _select_best_bars(db, stock_code, start, end)
-        required_records = max(min(days, _CACHE_MIN_RECORDS), 1)
+        db = get_db() if not source else None
+        _code, bars = _select_best_bars(db, stock_code, start, end) if not source else (None, [])
+        # Long-window requests must not silently reuse a short indicator cache.
+        required_records = days if days > 365 else max(min(days, _CACHE_MIN_RECORDS), 1)
         latest_date = max((_bar_date(bar) for bar in bars), default=date.min)
         if bars and latest_date >= end and len(bars) >= required_records:
             df = pd.DataFrame([b.to_dict() for b in bars])
+            from data_provider.base import BaseFetcher
+            df = df.sort_values('date').drop_duplicates('date', keep='last')
+            df = BaseFetcher._calculate_indicators(df)
+            if 'data_source' in df and 'amount' in df:
+                df.loc[df['data_source'].eq('YfinanceFetcher'), 'amount'] = float('nan')
             logger.debug(
                 "load_history_df(%s): %d bars from DB (requested %d)",
                 stock_code, len(df), days,
@@ -163,12 +171,27 @@ def load_history_df(
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
     # --- 2. Network fallback via singleton DataFetcherManager -------------
+    diagnostics = []
     try:
         manager = _get_fetcher_manager()
-        df, source = manager.get_daily_data(stock_code, days=days)
+        if days > 365 or source:
+            df, source = manager.get_daily_data(
+                stock_code, days=days, start_date=start.isoformat(), end_date=end.isoformat(),
+                source=source, min_records=days, diagnostics=diagnostics,
+            )
+            if df is not None and not df.empty and "date" in df.columns:
+                dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+                df = df.loc[(dates >= start) & (dates <= end)].sort_values("date")
+        else:
+            df, source = manager.get_daily_data(stock_code, days=days)
         if df is not None and not df.empty:
+            df.attrs["source_attempts"] = diagnostics
             return df, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
 
+    if diagnostics or source:
+        empty = pd.DataFrame()
+        empty.attrs["source_attempts"] = diagnostics
+        return empty, "none"
     return None, "none"

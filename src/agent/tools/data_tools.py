@@ -9,6 +9,8 @@ Tools:
 - get_analysis_context: historical analysis context from DB
 """
 
+from src.time_utils import beijing_now
+
 import logging
 from datetime import date
 from threading import Lock
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 _fetcher_manager_singleton = None
 _fetcher_manager_lock = Lock()
 _DAILY_HISTORY_DEFAULT_DAYS = 60
-_DAILY_HISTORY_MAX_DAYS = 365
+_DAILY_HISTORY_MAX_DAYS = 1260
 
 
 def _get_fetcher_manager():
@@ -245,6 +247,7 @@ def _handle_get_realtime_quote(stock_code: str) -> dict:
 
     return {
         "code": quote.code,
+        **(quote.provenance() if hasattr(quote, "provenance") else {"freshness": "unknown"}),
         "name": quote.name,
         "price": quote.price,
         "change_pct": quote.change_pct,
@@ -287,16 +290,21 @@ get_realtime_quote_tool = ToolDefinition(
 # get_daily_history
 # ============================================================
 
-def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
+def _handle_get_daily_history(stock_code: str, days: int = 60, source: str = None) -> dict:
     """Get daily OHLCV history data."""
     effective_days, metadata = _normalize_history_days(days)
 
     from src.services.history_loader import load_history_df
-    df, source = load_history_df(stock_code, days=effective_days)
+    requested_source = source
+    options = {"source": source} if source else {}
+    df, source = load_history_df(stock_code, days=effective_days, **options)
 
     if df is None or df.empty:
         return _append_history_metadata(
-            {"error": f"No historical data available for {stock_code}"},
+            {"error": f"No historical data available for {stock_code}",
+             "requested_source": requested_source,
+             "source_attempts": df.attrs.get("source_attempts", []) if df is not None else [],
+             "info": "An unavailable or failed source does not prove that the instrument has no older history."},
             metadata,
         )
 
@@ -318,7 +326,8 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
             )
 
     # Convert DataFrame to list of dicts (last N records)
-    records = df.tail(min(effective_days, len(df))).to_dict(orient="records")
+    clean = df.replace([float('inf'), -float('inf')], float('nan'))
+    records = clean.astype(object).where(clean.notna(), None).tail(min(effective_days, len(df))).to_dict(orient="records")
     # Ensure date is string
     for r in records:
         if "date" in r:
@@ -331,10 +340,22 @@ def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     return _append_history_metadata({
         "code": response_code,
         "source": source,
+        "requested_source": requested_source,
+        "source_attempts": df.attrs.get("source_attempts", []),
+        "coverage_basis": "returned_bar_count_only; not a calendar-year or continuity guarantee",
+        "indicator_basis": {"ma": "full-window simple average, unrounded; null when insufficient",
+                            "volume_ratio": "daily volume / previous 5 sessions mean; not intraday volume ratio",
+                            "amount": "null when unavailable; Yahoo notional estimates are not used"},
+        "volume_unit": "shares" if source in ("YfinanceFetcher", "BaostockFetcher") else "unknown",
+        "current_time": beijing_now().isoformat(),
+        "timezone": "Asia/Shanghai",
         "cache_hit": source == "db_cache",
         "requested_days": effective_days,
         "effective_days": effective_days,
         "actual_records": len(records),
+        "coverage_complete": len(records) >= effective_days,
+        "start_date": records[0].get("date") if records else None,
+        "end_date": records[-1].get("date") if records else None,
         "partial_cache": source == "db_cache" and len(records) < effective_days,
         "total_records": len(records),
         "data": records,
@@ -347,6 +368,10 @@ get_daily_history_tool = ToolDefinition(
                 "with MA5/MA10/MA20 indicators. Returns the last N trading days.",
     parameters=[
         ToolParameter(
+            name="source", type="string", required=False,
+            description="Optional exact provider name (AkshareFetcher, BaostockFetcher, YfinanceFetcher, EfinanceFetcher, TushareFetcher, PolygonFetcher, LongbridgeFetcher). Bypasses cache and uses only that provider; failure is explicit. Omit for automatic fallback. Inspect source_attempts before claiming older history does not exist.",
+        ),
+        ToolParameter(
             name="stock_code",
             type="string",
             description="Stock code, e.g., '600519' (A-share), 'AAPL' (US)",
@@ -354,7 +379,7 @@ get_daily_history_tool = ToolDefinition(
         ToolParameter(
             name="days",
             type="integer",
-            description="Number of trading days to fetch (default: 60)",
+            description="Number of trading days to fetch (default: 60, maximum: 1260). Check coverage_complete and returned dates before comparing returns.",
             required=False,
             default=60,
         ),
@@ -692,3 +717,16 @@ get_capital_flow_tool = ToolDefinition(
 
 
 ALL_DATA_TOOLS.append(get_capital_flow_tool)
+
+
+def _handle_get_current_time():
+    now = beijing_now()
+    return {"current_time": now.isoformat(timespec="seconds"), "date": now.date().isoformat(),
+            "timezone": "Asia/Shanghai", "utc_offset": "+08:00", "weekday": now.isoweekday(),
+            "note": "This is program time, not a market quote timestamp or trading-session guarantee."}
+
+
+ALL_DATA_TOOLS.append(ToolDefinition(
+    name="get_current_time", description="Get authoritative current Beijing time (UTC+08:00). Use for today/yesterday and date-sensitive questions; never infer current date from old chat.",
+    parameters=[], handler=_handle_get_current_time, category="data",
+))

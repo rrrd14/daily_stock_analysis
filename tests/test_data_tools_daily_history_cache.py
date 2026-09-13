@@ -77,6 +77,22 @@ class _FakeDb:
 
 
 class DailyHistoryCacheToolTest(unittest.TestCase):
+    def test_long_window_bypasses_short_fresh_cache_and_reports_partial_provider(self):
+        target = date(2026, 4, 24)
+        db = _FakeDb({"588000": _rows("588000", target, 169)})
+        df = pd.DataFrame([row.to_dict() for row in reversed(_rows("588000", target, 200))])
+        manager = SimpleNamespace(get_daily_data=MagicMock(return_value=(df, "AkshareFetcher")))
+        with patch("src.storage.get_db", return_value=db), \
+             patch("src.agent.tools.data_tools._get_db", return_value=db), \
+             patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
+            result = self._run_with_frozen_date(target, "588000", days=756)
+        manager.get_daily_data.assert_called_once()
+        self.assertEqual(result["effective_days"], 756)
+        self.assertEqual(result["actual_records"], 200)
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["end_date"], target.isoformat())
+        self.assertEqual(result["start_date"], (target - timedelta(days=199)).isoformat())
+
     def _run_with_frozen_date(self, target: date, stock_code: str, days: int):
         token = set_frozen_target_date(target)
         try:
@@ -218,11 +234,16 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
         with patch("src.storage.get_db", return_value=db), \
              patch("src.agent.tools.data_tools._get_db", return_value=db), \
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
-            result = self._run_with_frozen_date(target, "600519", days=999)
+            result = self._run_with_frozen_date(target, "600519", days=9999)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=365)
-        self.assertEqual(result["requested_days"], 999)
-        self.assertEqual(result["effective_days"], 365)
+        manager.get_daily_data.assert_called_once_with(
+            "600519", days=1260,
+            start_date=(target - timedelta(days=int(1260 * 1.8) + 10)).isoformat(),
+            end_date=target.isoformat(),
+            source=None, min_records=1260, diagnostics=[],
+        )
+        self.assertEqual(result["requested_days"], 9999)
+        self.assertEqual(result["effective_days"], 1260)
         self.assertIn("warning", result)
 
 

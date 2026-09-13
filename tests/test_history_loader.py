@@ -53,7 +53,7 @@ class HistoryLoaderTestCase(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(source, "db_cache")
-        self.assertEqual(len(df), 40)
+        self.assertEqual(len(df), 1)  # Duplicate dates are not separate sessions.
         mock_db.get_data_range.assert_called_once()
 
     # ------------------------------------------------------------------
