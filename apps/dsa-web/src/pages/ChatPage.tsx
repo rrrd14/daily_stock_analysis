@@ -538,7 +538,7 @@ const ChatPage: React.FC = () => {
                         <>
                           <span className="separator" />
                           <span className="meta">
-                            {new Date(s.last_active).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                            {parseBeijingDate(s.last_active).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', month: 'short', day: 'numeric' })}
                           </span>
                         </>
                       )}
@@ -872,6 +872,7 @@ const ChatPage: React.FC = () => {
                             导出
                           </button>
                         </div>
+                        <ChatBacktestEvidence content={msg.content} />
                         <div className="chat-prose pr-20 sm:pr-24">
                           <Markdown remarkPlugins={[remarkGfm]}>
                             {msg.content}
@@ -1050,3 +1051,5 @@ const ChatPage: React.FC = () => {
 };
 
 export default ChatPage;
+import { parseBeijingDate } from '../utils/format';
+import { ChatBacktestEvidence } from '../components/BacktestRunCard';

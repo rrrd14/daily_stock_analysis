@@ -6,6 +6,7 @@ Provides database access helpers for backtest tables.
 
 from __future__ import annotations
 
+from src.time_utils import beijing_now_naive
 import json
 import logging
 from datetime import date, datetime, timedelta
@@ -35,7 +36,7 @@ class BacktestRepository:
         force: bool,
     ) -> List[AnalysisHistory]:
         """Return AnalysisHistory rows eligible for backtest."""
-        cutoff_dt = datetime.now() - timedelta(days=min_age_days)
+        cutoff_dt = beijing_now_naive() - timedelta(days=min_age_days)
 
         with self.db.get_session() as session:
             conditions = [AnalysisHistory.created_at <= cutoff_dt]
@@ -49,6 +50,7 @@ class BacktestRepository:
                     and_(
                         BacktestResult.eval_window_days == eval_window_days,
                         BacktestResult.engine_version == engine_version,
+                        BacktestResult.eval_status == "completed",
                     )
                 )
                 query = query.where(AnalysisHistory.id.not_in(existing_ids))
@@ -342,6 +344,6 @@ class BacktestRepository:
         if analysis_date_to is not None:
             conditions.append(BacktestResult.analysis_date <= analysis_date_to)
         if days:
-            cutoff = datetime.now() - timedelta(days=int(days))
+            cutoff = beijing_now_naive() - timedelta(days=int(days))
             conditions.append(BacktestResult.evaluated_at >= cutoff)
         return conditions

@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+from src.time_utils import beijing_now_naive
 import json
 import logging
+import hashlib
+from pathlib import Path
+from uuid import uuid4
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -13,8 +17,9 @@ from sqlalchemy import and_, select
 from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.repositories.backtest_repo import BacktestRepository
+from src.repositories.backtest_run_repo import BacktestRunRepository, json_value
 from src.repositories.stock_repo import StockRepository
-from src.storage import BacktestResult, BacktestSummary, DatabaseManager
+from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,61 @@ class BacktestService:
         self.stock_repo = StockRepository(self.db)
 
     def run_backtest(
+        self, *, code=None, force=False, eval_window_days=None, min_age_days=None, limit=200,
+    ) -> Dict[str, Any]:
+        """Record the inputs actually evaluated; never infer execution from a rollup."""
+        config = get_config()
+        params = {
+            "code": code, "force": force, "limit": int(limit),
+            "eval_window_days": int(eval_window_days if eval_window_days is not None
+                                    else getattr(config, "backtest_eval_window_days", 10)),
+            "min_age_days": int(min_age_days if min_age_days is not None
+                               else getattr(config, "backtest_min_age_days", 14)),
+        }
+        engine_settings = {
+            "engine_version": str(getattr(config, "backtest_engine_version", "v1")),
+            "neutral_band_pct": float(getattr(config, "backtest_neutral_band_pct", 2.0)),
+        }
+        evidence = {
+            "schema_version": 1, "kind": "ai_report_evaluation",
+            "parameters": {**params, **engine_settings},
+            "code_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                            for path in (Path(__file__), Path(__file__).parents[1] / "core/backtest_engine.py")},
+            "limitations": ["Not a portfolio backtest; capital, fees and slippage are not modeled.",
+                            "Adjustment is unknown; bar count does not validate trading-calendar continuity.",
+                            "Current stored/fetched data does not prove historical point-in-time availability."],
+            "items": [],
+        }
+        run_id = uuid4().hex
+        runs = BacktestRunRepository(self.db)
+        runs.create(run_id, evidence)
+        try:
+            stats = self._run_backtest(**params, audit_items=evidence["items"], engine_settings=engine_settings)
+            status = ("empty" if not stats["processed"] else
+                      "partial" if stats["insufficient"] or stats["errors"] else "completed")
+            evidence["counts"] = stats
+            runs.finish(run_id, status, evidence)
+        except Exception:
+            evidence["failure"] = "Execution or persistence failed; some result rows may already be saved."
+            try:
+                runs.finish(run_id, "failed", evidence)
+            except Exception:
+                logger.exception("Unable to finalize backtest run %s", run_id)
+            raise
+        return {**stats, "run_id": run_id, "status": status}
+
+    def get_run(self, run_id):
+        return BacktestRunRepository(self.db).get(run_id)
+
+    def get_runs(self):
+        return BacktestRunRepository(self.db).recent()
+
+    @staticmethod
+    def _snapshot_bar(bar):
+        return json_value({key: getattr(bar, key, None)
+                           for key in ("date", "open", "high", "low", "close", "volume", "data_source")})
+
+    def _run_backtest(
         self,
         *,
         code: Optional[str] = None,
@@ -37,6 +97,8 @@ class BacktestService:
         eval_window_days: Optional[int] = None,
         min_age_days: Optional[int] = None,
         limit: int = 200,
+        audit_items=None,
+        engine_settings=None,
     ) -> Dict[str, Any]:
         config = get_config()
 
@@ -45,8 +107,8 @@ class BacktestService:
         if min_age_days is None:
             min_age_days = getattr(config, "backtest_min_age_days", 14)
 
-        engine_version = getattr(config, "backtest_engine_version", "v1")
-        neutral_band_pct = float(getattr(config, "backtest_neutral_band_pct", 2.0))
+        engine_version = engine_settings["engine_version"]
+        neutral_band_pct = engine_settings["neutral_band_pct"]
 
         eval_config = EvaluationConfig(
             eval_window_days=int(eval_window_days),
@@ -74,10 +136,18 @@ class BacktestService:
         for analysis in candidates:
             processed += 1
             touched_codes.add(analysis.code)
+            item = {"analysis_history_id": analysis.id, "code": analysis.code,
+                    "operation_advice": analysis.operation_advice,
+                    "stop_loss": analysis.stop_loss, "take_profit": analysis.take_profit,
+                    "adjustment": "unknown", "coverage_validation": "bar_count_only",
+                    "requested_forward_bars": int(eval_window_days), "start_bar": None,
+                    "forward_bars": []}
 
             try:
                 analysis_date = self._resolve_analysis_date(analysis)
+                item["requested_analysis_date"] = json_value(analysis_date)
                 if analysis_date is None:
+                    item["reason"] = "missing_analysis_date"
                     errors += 1
                     results_to_save.append(
                         BacktestResult(
@@ -86,7 +156,7 @@ class BacktestService:
                             eval_window_days=int(eval_window_days),
                             engine_version=str(engine_version),
                             eval_status="error",
-                            evaluated_at=datetime.now(),
+                            evaluated_at=beijing_now_naive(),
                             operation_advice=analysis.operation_advice,
                         )
                     )
@@ -99,6 +169,7 @@ class BacktestService:
 
                 if start_daily is None or start_daily.close is None:
                     insufficient += 1
+                    item["reason"] = "missing_start_price"
                     results_to_save.append(
                         BacktestResult(
                             analysis_history_id=analysis.id,
@@ -107,7 +178,7 @@ class BacktestService:
                             eval_window_days=int(eval_window_days),
                             engine_version=str(engine_version),
                             eval_status="insufficient_data",
-                            evaluated_at=datetime.now(),
+                            evaluated_at=beijing_now_naive(),
                             operation_advice=analysis.operation_advice,
                         )
                     )
@@ -127,6 +198,9 @@ class BacktestService:
                         eval_window_days=int(eval_window_days),
                     )
 
+                item["start_bar"] = self._snapshot_bar(start_daily)
+                item["forward_bars"] = [self._snapshot_bar(bar) for bar in forward_bars]
+                item["start_date_matches_request"] = start_daily.date == analysis_date
                 evaluation = BacktestEngine.evaluate_single(
                     operation_advice=analysis.operation_advice,
                     analysis_date=start_daily.date,
@@ -139,6 +213,7 @@ class BacktestService:
 
                 status = evaluation.get("eval_status")
                 if status == "insufficient_data":
+                    item["reason"] = "insufficient_forward_data"
                     insufficient += 1
                 elif status == "completed":
                     completed += 1
@@ -153,7 +228,7 @@ class BacktestService:
                         eval_window_days=int(evaluation.get("eval_window_days") or eval_window_days),
                         engine_version=str(evaluation.get("engine_version") or engine_version),
                         eval_status=str(evaluation.get("eval_status") or "error"),
-                        evaluated_at=datetime.now(),
+                        evaluated_at=beijing_now_naive(),
                         operation_advice=evaluation.get("operation_advice"),
                         position_recommendation=evaluation.get("position_recommendation"),
                         start_price=evaluation.get("start_price"),
@@ -180,6 +255,7 @@ class BacktestService:
 
             except Exception as exc:
                 errors += 1
+                item["reason"] = "evaluation_exception"
                 logger.error(f"回测失败: {analysis.code}#{analysis.id}: {exc}")
                 results_to_save.append(
                     BacktestResult(
@@ -189,14 +265,23 @@ class BacktestService:
                         eval_window_days=int(eval_window_days),
                         engine_version=str(engine_version),
                         eval_status="error",
-                        evaluated_at=datetime.now(),
+                        evaluated_at=beijing_now_naive(),
                         operation_advice=analysis.operation_advice,
                     )
                 )
 
+            finally:
+                # Copy before save_results_batch expires ORM attributes on commit.
+                result = results_to_save[-1]
+                item["result"] = json_value({column.name: getattr(result, column.name)
+                                              for column in BacktestResult.__table__.columns
+                                              if column.name != "id"})
+                audit_items.append(item)
+
         saved = 0
         if results_to_save:
-            saved = self.repo.save_results_batch(results_to_save, replace_existing=force)
+            # Retry incomplete/error evaluations without duplicating their unique keys.
+            saved = self.repo.save_results_batch(results_to_save, replace_existing=True)
 
         if saved:
             self._recompute_summaries(
@@ -301,7 +386,15 @@ class BacktestService:
             engine_version=engine_version,
         )
         if summary is None:
-            return None
+            # Results may have committed before summary generation failed.
+            window = eval_window_days if eval_window_days is not None else config.backtest_eval_window_days
+            rows = self.repo.list_results(code=code, eval_window_days=window, engine_version=engine_version)
+            if not rows:
+                return None
+            return self._build_dynamic_summary(
+                rows=rows, scope=scope, code=lookup_code,
+                eval_window_days=window, engine_version=engine_version,
+            )
         return self._summary_to_dict(summary)
 
     def get_global_summary(self, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -317,14 +410,39 @@ class BacktestService:
         )
 
     def get_skill_summary(self, skill_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        """Return skill-like summary metrics for Agent memory consumers.
+        """Aggregate explicitly single-skill analyses; never infer legacy attribution.
 
-        The current backtest storage layer only persists overall / per-stock rollups.
-        Re-using the overall rollup here would fabricate skill-specific performance
-        and mislead auto-weighting. Until real skill-tagged summaries exist, return
-        ``None`` so downstream callers fall back to neutral weighting.
+        Combined-skill and multi-agent decisions are excluded because their final
+        return cannot be attributed to an individual skill for auto-weighting.
         """
-        return None
+        if not skill_id or not skill_id.strip():
+            return None
+        skill_id = skill_id.strip()
+        config = get_config()
+        window = eval_window_days if eval_window_days is not None else config.backtest_eval_window_days
+        version = config.backtest_engine_version
+        results = []
+        with self.db.get_session() as session:
+            query = (
+                select(BacktestResult, AnalysisHistory.raw_result)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                .where(BacktestResult.eval_window_days == window, BacktestResult.engine_version == version)
+            )
+            for result, raw in session.execute(query).yield_per(500):
+                try:
+                    payload = json.loads(raw or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict) and payload.get("analysis_skill_ids") == [skill_id]:
+                    results.append(result)
+        if not results:
+            return None
+        summary = self._build_dynamic_summary(
+            rows=results, scope="skill", code=skill_id,
+            eval_window_days=window, engine_version=version,
+        )
+        summary["skill_id"] = skill_id
+        return self._normalize_learning_summary(summary)
 
     def get_strategy_summary(self, strategy_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Compatibility wrapper for legacy strategy-based callers."""
@@ -411,7 +529,7 @@ class BacktestService:
             code=summary_data.get("code"),
             eval_window_days=summary_data.get("eval_window_days"),
             engine_version=summary_data.get("engine_version"),
-            computed_at=datetime.now(),
+            computed_at=beijing_now_naive(),
             total_evaluations=summary_data.get("total_evaluations") or 0,
             completed_count=summary_data.get("completed_count") or 0,
             insufficient_count=summary_data.get("insufficient_count") or 0,
@@ -592,5 +710,5 @@ class BacktestService:
             engine_version=engine_version,
         )
         summary["code"] = None if summary.get("code") == OVERALL_SENTINEL_CODE else summary.get("code")
-        summary["computed_at"] = datetime.now().isoformat()
+        summary["computed_at"] = beijing_now_naive().isoformat()
         return summary

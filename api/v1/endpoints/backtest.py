@@ -13,6 +13,7 @@ from api.deps import get_database_manager
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
     BacktestRunResponse,
+    BacktestRunRecord,
     BacktestResultItem,
     BacktestResultsResponse,
     PerformanceMetrics,
@@ -24,6 +25,19 @@ from src.storage import DatabaseManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/runs", response_model=list[BacktestRunRecord], response_model_exclude_none=True)
+def get_backtest_runs(db_manager: DatabaseManager = Depends(get_database_manager)):
+    return BacktestService(db_manager).get_runs()
+
+
+@router.get("/runs/{run_id}", response_model=BacktestRunRecord)
+def get_backtest_run(run_id: str, db_manager: DatabaseManager = Depends(get_database_manager)):
+    record = BacktestService(db_manager).get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Backtest run not found")
+    return record
 
 
 def _validate_analysis_date_range(
@@ -68,7 +82,7 @@ def run_backtest(
         logger.error(f"回测执行失败: {exc}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"error": "internal_error", "message": f"回测执行失败: {str(exc)}"},
+            detail={"error": "internal_error", "message": "回测执行失败，请查询最近运行记录和服务端日志。"},
         )
 
 

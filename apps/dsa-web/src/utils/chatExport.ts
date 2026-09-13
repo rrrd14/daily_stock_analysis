@@ -6,6 +6,7 @@ import type { Message } from '../stores/agentChatStore';
 export function formatSessionAsMarkdown(messages: Message[]): string {
   const now = new Date();
   const timeStr = now.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -16,7 +17,7 @@ export function formatSessionAsMarkdown(messages: Message[]): string {
   const lines: string[] = [
     '# 问股会话',
     '',
-    `生成时间: ${timeStr}`,
+    `生成时间: ${timeStr}（北京时间 UTC+08:00）`,
     '',
   ];
 

@@ -1,4 +1,5 @@
 import type React from 'react';
+import { BacktestRunCard, RecentBacktestRuns } from '../components/BacktestRunCard';
 import { useState, useEffect, useCallback } from 'react';
 import { Check, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
@@ -424,9 +425,14 @@ const BacktestPage: React.FC = () => {
             )}
           </button>
         </div>
+        <RecentBacktestRuns key={runResult?.runId ?? 'initial'} />
+        {!runResult?.runId && /^[a-f0-9]{32}$/.test(new URLSearchParams(window.location.search).get('run') ?? '') && (
+          <BacktestRunCard runId={new URLSearchParams(window.location.search).get('run')!} />
+        )}
         {runResult && (
           <div className="mt-2 max-w-4xl">
             <RunSummary data={runResult} />
+            {runResult.runId && <BacktestRunCard key={runResult.runId} runId={runResult.runId} />}
           </div>
         )}
         {runError && (

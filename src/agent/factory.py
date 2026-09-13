@@ -319,7 +319,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         )
 
     from src.agent.executor import AgentExecutor
-    return AgentExecutor(
+    executor = AgentExecutor(
         tool_registry=registry,
         llm_adapter=llm_adapter,
         skill_instructions=prompt_state.skill_instructions,
@@ -328,6 +328,8 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
         timeout_seconds=getattr(config, "agent_orchestrator_timeout_s", 0),
     )
+    executor.analysis_skill_ids = [skill.name for skill in skill_manager.list_active_skills()]
+    return executor
 
 
 def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technical_skill_policy: str = ""):

@@ -7,9 +7,11 @@ summary creation, and query methods.
 """
 
 import os
+import json
 import tempfile
 import unittest
 from datetime import date, datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.config import Config
@@ -19,6 +21,138 @@ from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, Databa
 
 
 class BacktestServiceTestCase(unittest.TestCase):
+    def test_run_evidence_is_immutable_and_matches_engine_inputs(self):
+        import hashlib
+        service = BacktestService(self.db)
+        first = service.run_backtest(eval_window_days=3, min_age_days=0)
+        record = service.get_run(first["run_id"])
+        self.assertEqual(record["status"], "completed")
+        evidence = record["evidence"]
+        item = evidence["items"][0]
+        self.assertEqual(item["start_bar"]["close"], 100)
+        self.assertEqual(len(item["forward_bars"]), 3)
+        self.assertAlmostEqual(item["result"]["stock_return_pct"], 7)
+        self.assertEqual(item["adjustment"], "unknown")
+        encoded = json.dumps(evidence, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        self.assertEqual(record["sha256"], hashlib.sha256(encoded.encode()).hexdigest())
+        with self.db.get_session() as session:
+            session.query(StockDaily).filter(StockDaily.date == date(2024, 1, 4)).update({"close": 120})
+            session.commit()
+        second = service.run_backtest(eval_window_days=3, min_age_days=0, force=True)
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        self.assertEqual(service.get_run(first["run_id"]), record)
+        self.assertAlmostEqual(service.get_run(second["run_id"])["evidence"]["items"][0]["result"]["stock_return_pct"], 20)
+
+    def test_empty_and_insufficient_runs_are_not_success(self):
+        service = BacktestService(self.db)
+        empty = service.run_backtest(code="DOES_NOT_EXIST")
+        self.assertEqual(empty["status"], "empty")
+        with patch.object(service, "_try_fill_daily_data"):
+            partial = service.run_backtest(eval_window_days=10, min_age_days=0)
+        self.assertEqual(partial["status"], "partial")
+        self.assertEqual(service.get_run(partial["run_id"])["evidence"]["counts"]["completed"], 0)
+
+    def test_run_failure_is_recorded_without_exception_secrets(self):
+        service = BacktestService(self.db)
+        with patch.object(service.repo, "save_results_batch", side_effect=RuntimeError("secret-token")):
+            with self.assertRaises(RuntimeError):
+                service.run_backtest(eval_window_days=3, min_age_days=0)
+        record = service.get_run(service.get_runs()[0]["run_id"])
+        self.assertEqual(record["status"], "failed")
+        self.assertNotIn("secret-token", json.dumps(record))
+        from src.repositories.backtest_run_repo import BacktestRunRepository
+        with self.assertRaises(ValueError):
+            BacktestRunRepository(self.db).finish(record["run_id"], "completed", {})
+
+    def test_interrupted_run_remains_unfinished(self):
+        service = BacktestService(self.db)
+        with patch.object(service.repo, "get_candidates", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                service.run_backtest()
+        record = service.get_run(service.get_runs()[0]["run_id"])
+        self.assertEqual(record["status"], "running")
+        self.assertIsNone(record["sha256"])
+        self.assertIsNone(record["finished_at"])
+
+    def test_run_api_and_agent_read_authoritative_records(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from api.deps import get_database_manager
+        from api.v1.endpoints.backtest import router
+        from src.agent.tools.backtest_tools import _handle_get_backtest_run
+        app = FastAPI()
+        app.include_router(router, prefix="/backtest")
+        app.dependency_overrides[get_database_manager] = lambda: self.db
+        with TestClient(app) as client:
+            response = client.post("/backtest/run", json={"eval_window_days": 3, "min_age_days": 0})
+            self.assertEqual(response.status_code, 200)
+            run_id = response.json()["run_id"]
+            record = client.get(f"/backtest/runs/{run_id}").json()
+            self.assertEqual(record["evidence"]["counts"]["completed"], 1)
+            self.assertEqual(client.get("/backtest/runs").json()[0]["run_id"], run_id)
+            self.assertEqual(client.get("/backtest/runs/missing").status_code, 404)
+        with patch("src.agent.tools.backtest_tools._get_backtest_service", return_value=BacktestService(self.db)):
+            self.assertEqual(_handle_get_backtest_run(run_id)["url"], f"/backtest?run={run_id}")
+            self.assertEqual(_handle_get_backtest_run("missing")["status"], "not_found")
+
+    def test_skill_attribution_persists_even_without_context_snapshot(self):
+        result = SimpleNamespace(
+            code="600519", name="test", sentiment_score=70,
+            operation_advice="buy", trend_prediction="up", analysis_summary="test",
+            analysis_skill_ids=["bull_trend"],
+        )
+        saved = self.db.save_analysis_history(
+            result, "attributed", "simple", None,
+            context_snapshot={"secret_context": "excluded"}, save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter_by(query_id="attributed").one()
+            self.assertIsNone(row.context_snapshot)
+            self.assertEqual(json.loads(row.raw_result)["analysis_skill_ids"], ["bull_trend"])
+
+    def test_incomplete_result_is_retried_and_replaced(self):
+        service = BacktestService(self.db)
+        with self.db.get_session() as session:
+            session.query(StockDaily).filter(StockDaily.date == date(2024, 1, 4)).delete()
+            session.commit()
+        with patch.object(service, "_try_fill_daily_data"):
+            first = service.run_backtest(eval_window_days=3, min_age_days=0)
+        self.assertEqual(first["insufficient"], 1)
+        with self.db.get_session() as session:
+            session.add(StockDaily(code="600519", date=date(2024, 1, 4), high=109, low=104, close=107))
+            session.commit()
+        second = service.run_backtest(eval_window_days=3, min_age_days=0)
+        self.assertEqual(second["completed"], 1)
+        with self.db.get_session() as session:
+            self.assertEqual(session.query(BacktestResult).count(), 1)
+        self.assertEqual(service.run_backtest(eval_window_days=3, min_age_days=0)["processed"], 0)
+
+    def test_skill_summary_uses_only_explicit_single_skill_attribution(self):
+        service = BacktestService(self.db)
+        service.run_backtest(eval_window_days=3, min_age_days=0)
+        for tags, expected in [([], False), (["bull_trend", "other"], False), (["bull_trend"], True)]:
+            with self.db.get_session() as session:
+                row = session.query(AnalysisHistory).first()
+                row.raw_result = json.dumps({"analysis_skill_ids": tags})
+                session.commit()
+            summary = service.get_skill_summary("bull_trend", eval_window_days=3)
+            self.assertEqual(summary is not None, expected)
+            if expected:
+                self.assertEqual(summary["completed_count"], 1)
+                self.assertEqual(summary["scope"], "skill")
+                self.assertEqual(summary["win_rate"], summary["win_rate_pct"] / 100)
+        self.assertIsNone(service.get_skill_summary("bull_trend", eval_window_days=30))
+        self.assertIsNone(service.get_skill_summary("other", eval_window_days=3))
+
+    def test_summary_recovers_from_results_without_rollup(self):
+        service = BacktestService(self.db)
+        service.run_backtest(eval_window_days=3, min_age_days=0)
+        with self.db.get_session() as session:
+            session.query(BacktestSummary).delete()
+            session.commit()
+        self.assertEqual(service.get_summary(scope="overall", code=None, eval_window_days=3)["completed_count"], 1)
+
     def setUp(self) -> None:
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = os.path.join(self._temp_dir.name, "test_backtest_service.db")

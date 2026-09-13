@@ -1,9 +1,18 @@
+export const parseBeijingDate = (value: string): Date => {
+  const normalized = value.trim().replace(' ', 'T');
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? `${normalized}T00:00:00+08:00`
+    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(normalized)
+      ? `${normalized}+08:00` : normalized);
+};
+
 export const formatDateTime = (value?: string): string => {
   if (!value) return '—';
-  const date = new Date(value);
+  const date = parseBeijingDate(value);
   if (Number.isNaN(date.getTime())) return value;
 
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -14,10 +23,11 @@ export const formatDateTime = (value?: string): string => {
 
 export const formatDate = (value?: string): string => {
   if (!value) return '—';
-  const date = new Date(value);
+  const date = parseBeijingDate(value);
   if (Number.isNaN(date.getTime())) return value;
 
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -25,10 +35,7 @@ export const formatDate = (value?: string): string => {
 };
 
 export const toDateInputValue = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date);
 };
 
 /**
@@ -38,7 +45,7 @@ export const toDateInputValue = (date: Date): string => {
  */
 export const getRecentStartDate = (days: number): string => {
   const date = new Date();
-  date.setDate(date.getDate() - days);
+  date.setUTCDate(date.getUTCDate() - days);
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date);
 };
 

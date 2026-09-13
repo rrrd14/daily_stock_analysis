@@ -428,7 +428,7 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
             self.assertIsInstance(td, ToolDefinition)
             self.assertEqual(td.category, "data")
 
-    def test_skill_backtest_tool_reports_specific_skill_as_unsupported_until_persisted(self):
+    def test_skill_backtest_tool_reports_no_data_until_attributed_results_exist(self):
         from src.agent.tools.backtest_tools import _handle_get_skill_backtest_summary
 
         svc = MagicMock()
@@ -439,8 +439,8 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
 
         svc.get_skill_summary.assert_called_once_with("bull_trend", eval_window_days=20)
         self.assertEqual(payload["skill_id"], "bull_trend")
-        self.assertFalse(payload["supported"])
-        self.assertIn("not available", payload["info"])
+        self.assertTrue(payload["supported"])
+        self.assertEqual(payload["status"], "no_data")
 
     def test_skill_backtest_tool_requires_skill_id(self):
         from src.agent.tools.backtest_tools import (

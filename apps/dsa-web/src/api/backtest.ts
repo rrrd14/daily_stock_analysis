@@ -2,6 +2,7 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   BacktestRunRequest,
+  BacktestRunRecord,
   BacktestRunResponse,
   BacktestResultsResponse,
   BacktestResultItem,
@@ -11,6 +12,14 @@ import type {
 // ============ API ============
 
 export const backtestApi = {
+  getRun: async (runId: string): Promise<BacktestRunRecord> => {
+    const response = await apiClient.get<BacktestRunRecord>(`/api/v1/backtest/runs/${encodeURIComponent(runId)}`);
+    return response.data;
+  },
+  getRuns: async (): Promise<BacktestRunRecord[]> => {
+    const response = await apiClient.get<BacktestRunRecord[]>('/api/v1/backtest/runs');
+    return response.data;
+  },
   /**
    * Trigger backtest evaluation
    */

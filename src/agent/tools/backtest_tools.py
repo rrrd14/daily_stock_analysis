@@ -3,12 +3,15 @@
 Backtest tools — read-only tools exposing backtest summaries to the agent.
 
 Tools:
-- get_skill_backtest_summary: skill-scoped stats when available, otherwise an explicit unsupported/info response
+- get_skill_backtest_summary: skill-scoped stats when available, otherwise an explicit no-data response
 - get_strategy_backtest_summary: legacy alias of the overall summary tool
 - get_stock_backtest_summary: backtest results for a specific stock
 """
 
 import logging
+from typing import Optional
+
+from src.config import get_config
 
 from src.agent.tools.registry import ToolParameter, ToolDefinition
 
@@ -48,20 +51,22 @@ def _serialize_overall_backtest_summary(summary: dict, eval_window_days: int) ->
     }
 
 
-def _handle_get_overall_backtest_summary(eval_window_days: int = 30) -> dict:
+def _handle_get_overall_backtest_summary(eval_window_days: Optional[int] = None) -> dict:
     """Get the overall backtest summary for the full analysis corpus."""
     try:
+        eval_window_days = eval_window_days if eval_window_days is not None else get_config().backtest_eval_window_days
         svc = _get_backtest_service()
         summary = svc.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
         if summary is None:
-            return {"info": "No backtest summary available. Backtest may not have been run yet."}
+            return {"status": "no_data", "eval_window_days": eval_window_days,
+                    "info": "No summary for this evaluation window. Run backtests and check eligible analysis history; this does not prove backtests never ran."}
         return _serialize_overall_backtest_summary(summary, eval_window_days)
     except Exception:
         logger.warning("[backtest_tools] get_overall_backtest_summary error", exc_info=True)
         return {"error": "Failed to retrieve backtest summary."}
 
 
-def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: int = 30) -> dict:
+def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: Optional[int] = None) -> dict:
     """Get a skill-scoped backtest summary when real per-skill stats exist."""
     if not skill_id:
         return {
@@ -70,13 +75,16 @@ def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: int
         }
 
     try:
+        eval_window_days = eval_window_days if eval_window_days is not None else get_config().backtest_eval_window_days
         svc = _get_backtest_service()
         summary = svc.get_skill_summary(skill_id, eval_window_days=eval_window_days)
         if summary is None:
             return {
                 "skill_id": skill_id,
-                "supported": False,
-                "info": "Skill-scoped backtest summaries are not available yet.",
+                "supported": True,
+                "status": "no_data",
+                "eval_window_days": eval_window_days,
+                "info": "No evaluated analyses explicitly attributed to this skill. Untagged and combined-skill analyses are excluded.",
             }
         return {
             "scope": "skill",
@@ -116,9 +124,8 @@ get_skill_backtest_summary_tool = ToolDefinition(
         ToolParameter(
             name="eval_window_days",
             type="integer",
-            description="Evaluation window in days (default: 30). How many trading days after signal to evaluate.",
+            description="Evaluation window in trading days; omitted uses BACKTEST_EVAL_WINDOW_DAYS.",
             required=False,
-            default=30,
         ),
     ],
     handler=_handle_get_skill_backtest_summary,
@@ -135,9 +142,8 @@ get_strategy_backtest_summary_tool = ToolDefinition(
         ToolParameter(
             name="eval_window_days",
             type="integer",
-            description="Evaluation window in days (default: 30). How many trading days after signal to evaluate.",
+            description="Evaluation window in trading days; omitted uses BACKTEST_EVAL_WINDOW_DAYS.",
             required=False,
-            default=30,
         ),
     ],
     handler=_handle_get_overall_backtest_summary,
@@ -149,12 +155,13 @@ get_strategy_backtest_summary_tool = ToolDefinition(
 # get_stock_backtest_summary
 # ============================================================
 
-def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 30, limit: int = 10) -> dict:
+def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: Optional[int] = None, limit: int = 10) -> dict:
     """Get backtest results for a specific stock.
 
     Returns the summary plus recent evaluation items.
     """
     try:
+        eval_window_days = eval_window_days if eval_window_days is not None else get_config().backtest_eval_window_days
         svc = _get_backtest_service()
         result = {}
 
@@ -194,7 +201,8 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
         result["total"] = evals.get("total", 0)
 
         if result["summary"] is None and not result["recent_evaluations"]:
-            return {"info": f"No backtest data available for {stock_code}. Backtest may not have been run yet."}
+            return {"status": "no_data", "eval_window_days": eval_window_days,
+                    "info": f"No backtest data for {stock_code} in this evaluation window. Check eligible analysis history and run backtests."}
 
         return result
     except Exception:
@@ -217,9 +225,8 @@ get_stock_backtest_summary_tool = ToolDefinition(
         ToolParameter(
             name="eval_window_days",
             type="integer",
-            description="Evaluation window in days (default: 30)",
+            description="Evaluation window in trading days; omitted uses BACKTEST_EVAL_WINDOW_DAYS.",
             required=False,
-            default=30,
         ),
         ToolParameter(
             name="limit",
@@ -238,7 +245,34 @@ get_stock_backtest_summary_tool = ToolDefinition(
 # Exported tool list
 # ============================================================
 
+def _handle_get_backtest_run(run_id: str = ""):
+    service = _get_backtest_service()
+    if not run_id:
+        return {"runs": service.get_runs(), "info": "Read-only historical executions; select a run_id to inspect."}
+    record = service.get_run(run_id)
+    if record is None:
+        return {"status": "not_found", "info": "No execution evidence exists for this run ID."}
+    evidence = record.pop("evidence")
+    return {**record, "kind": evidence["kind"], "parameters": evidence["parameters"],
+            "counts": evidence.get("counts"), "limitations": evidence["limitations"],
+            "url": f"/backtest?run={record['run_id']}"}
+
+
+get_backtest_run_tool = ToolDefinition(
+    name="get_backtest_run",
+    description=("Read program execution evidence. Omit run_id to list recent runs. "
+                 "This never runs a backtest. Cite returned url as a Markdown link. "
+                 "AI report evaluations are not portfolio returns. Disclose status and limitations; "
+                 "a run reference does not verify other claims in your explanation."),
+    parameters=[ToolParameter(name="run_id", type="string", required=False,
+                              description="Existing run ID; omit to list recent runs.")],
+    handler=_handle_get_backtest_run,
+    category="data",
+)
+
+
 ALL_BACKTEST_TOOLS = [
+    get_backtest_run_tool,
     get_skill_backtest_summary_tool,
     get_strategy_backtest_summary_tool,
     get_stock_backtest_summary_tool,
