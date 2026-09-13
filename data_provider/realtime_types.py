@@ -20,6 +20,25 @@ from threading import RLock
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Union
 from enum import Enum
+from datetime import datetime
+from src.time_utils import BEIJING, beijing_now
+
+
+def parse_quote_time(value):
+    """Parse known provider China timestamps; never substitute fetch time."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            text = str(value).strip()
+            dt = datetime.strptime(text, "%Y%m%d%H%M%S") if len(text) == 14 and text.isdigit() else datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=BEIJING)
+        return dt.astimezone(BEIJING).isoformat(timespec="seconds")
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +144,11 @@ class UnifiedRealtimeQuote:
     change_amount: Optional[float] = None   # 涨跌额
     
     # === 量价指标（部分源可能缺失）===
-    volume: Optional[int] = None            # 成交量（手）
+    volume: Optional[int] = None            # 见 volume_unit，禁止默认所有来源单位相同
+    volume_unit: str = "unknown"
+    quote_time: Optional[str] = None
+    fetched_at: str = field(default_factory=lambda: beijing_now().isoformat(timespec="seconds"))
+    field_sources: Dict[str, Any] = field(default_factory=dict)
     amount: Optional[float] = None          # 成交额（元）
     volume_ratio: Optional[float] = None    # 量比
     turnover_rate: Optional[float] = None   # 换手率(%)
@@ -154,6 +177,7 @@ class UnifiedRealtimeQuote:
             'code': self.code,
             'name': self.name,
             'source': self.source.value,
+            **self.provenance(),
         }
         # 只添加非 None 的字段
         optional_fields = [
@@ -168,6 +192,22 @@ class UnifiedRealtimeQuote:
             if val is not None:
                 result[f] = val
         return result
+
+    def provenance(self):
+        quote_time = parse_quote_time(self.quote_time)
+        now = beijing_now()
+        age = (now - datetime.fromisoformat(quote_time)).total_seconds() if quote_time else None
+        status = "unknown" if age is None else "future_timestamp" if age < -60 else "stale" if age > 300 else "recent"
+        source = self.source.value if hasattr(self.source, "value") else str(self.source)
+        fields = {key: {"source": source, "quote_time": quote_time, "fetched_at": self.fetched_at}
+                  for key in ("price", "volume", "amount", "volume_ratio", "turnover_rate", "pe_ratio", "pb_ratio", "total_mv", "circ_mv", "amplitude")
+                  if getattr(self, key, None) is not None}
+        fields.update(self.field_sources)
+        return {"quote_time": quote_time, "fetched_at": self.fetched_at,
+                "current_time": now.isoformat(timespec="seconds"), "timezone": "Asia/Shanghai",
+                "freshness": status, "age_seconds": age, "volume_unit": self.volume_unit,
+                "field_sources": fields,
+                "freshness_note": "recent仅表示源时间戳在5分钟内；stale/unknown不应称为当前实时，抓取时间不等于行情时间。"}
     
     def has_basic_data(self) -> bool:
         """检查是否有基本的价格数据"""

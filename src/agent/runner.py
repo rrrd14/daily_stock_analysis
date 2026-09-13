@@ -408,6 +408,12 @@ def run_agent_loop(
     _MIN_STEP_BUDGET_S = 8.0
 
     for step in range(max_steps):
+        from src.time_utils import clock_context
+        import re
+        if messages and messages[0].get("role") == "system":
+            content = re.sub(r"\n?\[PROGRAM_CLOCK\].*?\[/PROGRAM_CLOCK\]\n?", "", messages[0]["content"], flags=re.S)
+            messages[0]["content"] = content + clock_context()
+
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         timeout_exhausted = remaining_timeout is not None and remaining_timeout <= 0
         budget_guard_triggered = (

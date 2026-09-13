@@ -246,10 +246,8 @@ class YfinanceFetcher(BaseFetcher):
 
         # 计算成交额（yfinance 不提供，使用估算值）
         # 成交额 ≈ 成交量 * 平均价格
-        if 'volume' in df.columns and 'close' in df.columns:
-            df['amount'] = df['volume'] * df['close']
-        else:
-            df['amount'] = 0
+        # Yahoo does not supply traded notional; do not present an estimate as actual turnover.
+        df['amount'] = float('nan')
 
         # 添加股票代码列
         df['code'] = stock_code

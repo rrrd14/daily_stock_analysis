@@ -804,6 +804,12 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            if source in ("tencent", "sina"):
+                source_key = f"akshare_{source}"
+                if not circuit_breaker.is_available(source_key):
+                    return None
+                return (self._get_stock_realtime_quote_tencent(stock_code) if source == "tencent"
+                        else self._get_stock_realtime_quote_sina(stock_code))
             source_key = "akshare_etf"
             if not circuit_breaker.is_available(source_key):
                 logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
@@ -897,7 +903,8 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=safe_int(row.get('成交量')) * 100 if safe_int(row.get('成交量')) is not None else None,
+                volume_unit="shares",
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
@@ -1044,6 +1051,8 @@ class AkshareFetcher(BaseFetcher):
                 change_pct=change_pct,
                 change_amount=change_amount,
                 volume=safe_int(fields[8]),  # 成交量（股）
+                volume_unit="shares",
+                quote_time=f"{fields[30]}T{fields[31]}+08:00" if len(fields) > 31 else None,
                 amount=safe_float(fields[9]),  # 成交额（元）
                 open_price=safe_float(fields[1]),
                 high=safe_float(fields[4]),
@@ -1187,7 +1196,9 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(fields[3]),
                 change_pct=safe_float(fields[32]),
                 change_amount=safe_float(fields[31]) if len(fields) > 31 else None,
-                volume=safe_int(fields[6]) * 100 if fields[6] else None,  # 腾讯返回的是手，转为股
+                volume=safe_int(fields[6]) * 100 if safe_int(fields[6]) is not None else None,
+                volume_unit="shares",
+                quote_time=fields[30] if len(fields) > 30 else None,  # 腾讯返回的是手，转为股
                 open_price=safe_float(fields[5]),
                 high=safe_float(fields[33]) if len(fields) > 33 else None,  # 修正：字段 33 是最高价
                 low=safe_float(fields[34]) if len(fields) > 34 else None,  # 修正：字段 34 是最低价
@@ -1301,7 +1312,8 @@ class AkshareFetcher(BaseFetcher):
                 price=safe_float(row.get('最新价')),
                 change_pct=safe_float(row.get('涨跌幅')),
                 change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
+                volume=safe_int(row.get('成交量')) * 100 if safe_int(row.get('成交量')) is not None else None,
+                volume_unit="shares",
                 amount=safe_float(row.get('成交额')),
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),

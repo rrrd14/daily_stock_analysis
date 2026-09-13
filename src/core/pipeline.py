@@ -500,6 +500,8 @@ class StockAnalysisPipeline:
             if result and result.success:
                 try:
                     self._emit_progress(97, f"{stock_name}：正在保存分析报告")
+                    prompt_state = getattr(self.analyzer, "_resolved_prompt_state", None)
+                    result.analysis_skill_ids = prompt_state.get("skill_ids", []) if isinstance(prompt_state, dict) else []
                     context_snapshot = self._build_context_snapshot(
                         enhanced_context=enhanced_context,
                         news_content=news_context,
@@ -565,6 +567,7 @@ class StockAnalysisPipeline:
             # 使用 getattr 安全获取字段，缺失字段返回 None 或默认值
             volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
             enhanced['realtime'] = {
+                **(realtime_quote.provenance() if hasattr(realtime_quote, 'provenance') else {'freshness': 'unknown'}),
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
@@ -883,6 +886,8 @@ class StockAnalysisPipeline:
             if result and result.success:
                 try:
                     initial_context["stock_name"] = resolved_stock_name
+                    skill_ids = getattr(executor, "analysis_skill_ids", [])
+                    result.analysis_skill_ids = skill_ids if isinstance(skill_ids, list) else []
                     self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
@@ -1428,6 +1433,11 @@ class StockAnalysisPipeline:
             return df
         if realtime_quote is None:
             return df
+        # Never relabel yesterday's close (or a quote with unknown time) as today's bar.
+        provenance = realtime_quote.provenance() if hasattr(realtime_quote, 'provenance') else {}
+        if provenance.get('freshness') != 'recent':
+            logger.info("跳过实时K线合成：行情时间未知、过期或异常")
+            return df
         price = getattr(realtime_quote, 'price', None)
         if price is None or not (isinstance(price, (int, float)) and price > 0):
             return df
@@ -1440,6 +1450,9 @@ class StockAnalysisPipeline:
             return df
         market = get_market_for_stock(code)
         market_today = get_market_now(market).date()
+        quote_date = get_market_now(market, current_time=datetime.fromisoformat(provenance['quote_time'])).date()
+        if quote_date != market_today:
+            return df
         if market and not is_market_open(market, market_today):
             return df
 
@@ -1449,12 +1462,19 @@ class StockAnalysisPipeline:
             (last_val if isinstance(last_val, date) else pd.Timestamp(last_val).date())
         )
         yesterday_close = float(df.iloc[-1]['close']) if len(df) > 0 else price
+        if last_date > market_today:
+            logger.warning("检测到未来日期行情，跳过实时合成: %s", code)
+            return df
         open_p = getattr(realtime_quote, 'open_price', None) or getattr(
             realtime_quote, 'pre_close', None
         ) or yesterday_close
         high_p = getattr(realtime_quote, 'high', None) or price
         low_p = getattr(realtime_quote, 'low', None) or price
-        vol = getattr(realtime_quote, 'volume', None) or 0
+        # Only combine known share units; old caches may contain lots or mixed sources.
+        known_share_sources = {'YfinanceFetcher', 'BaostockFetcher', 'PolygonFetcher', 'LongbridgeFetcher'}
+        history_shares = ('data_source' in df and set(df['data_source'].dropna()).issubset(known_share_sources)
+                          and df['data_source'].notna().all())
+        vol = getattr(realtime_quote, 'volume', None) if history_shares and getattr(realtime_quote, 'volume_unit', None) == 'shares' else float('nan')
         amt = getattr(realtime_quote, 'amount', None)
         pct = getattr(realtime_quote, 'change_pct', None)
 
@@ -1485,8 +1505,10 @@ class StockAnalysisPipeline:
                 'low': low_p,
                 'close': price,
                 'volume': vol,
-                'amount': amt if amt is not None else 0,
-                'pct_chg': pct if pct is not None else 0,
+                'amount': amt,
+                # Missing change_pct must stay NaN, not 0: 0 would falsely
+                # imply "no change" and pollute downstream pct_chg consumers.
+                'pct_chg': pct if pct is not None else float('nan'),
             }
             new_df = pd.DataFrame([new_row])
             df = pd.concat([df, new_df], ignore_index=True)

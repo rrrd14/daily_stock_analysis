@@ -1200,6 +1200,7 @@ class GeminiAnalyzer:
                 skills=getattr(self, "_requested_skills", None),
             )
             resolved_state = {
+                "skill_ids": [skill.name for skill in prompt_state.skill_manager.list_active_skills()],
                 "skill_instructions": prompt_state.skill_instructions,
                 "default_skill_policy": prompt_state.default_skill_policy,
                 "use_legacy_default_prompt": bool(getattr(prompt_state, "use_legacy_default_prompt", False)),
@@ -1501,7 +1502,8 @@ class GeminiAnalyzer:
         last_response_text: Optional[str] = None
         last_model: Optional[str] = None
         last_usage: Dict[str, Any] = {}
-        effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
+        from src.time_utils import clock_context
+        effective_system_prompt = (system_prompt or self.TEXT_SYSTEM_PROMPT) + clock_context()
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             try:
@@ -1905,6 +1907,8 @@ class GeminiAnalyzer:
             rt = context['realtime']
             prompt += f"""
 ### 实时行情增强数据
+行情时间：{rt.get('quote_time', '未知')}；抓取时间：{rt.get('fetched_at', '未知')}；时效：{rt.get('freshness', 'unknown')}（北京时间）。
+时效未知/过期时不得称为“当前实时”；各字段来源：{rt.get('field_sources', {})}。
 | 指标 | 数值 | 解读 |
 |------|------|------|
 | 当前价格 | {rt.get('price', 'N/A')} 元 | |

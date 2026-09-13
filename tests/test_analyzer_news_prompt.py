@@ -83,6 +83,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
             analyzer = GeminiAnalyzer()
 
         fake_state = SimpleNamespace(
+            skill_manager=SimpleNamespace(list_active_skills=lambda: [SimpleNamespace(name="pullback")]),
             skill_instructions="### 技能 1: 波段低吸\n- 关注支撑确认",
             default_skill_policy="",
         )
@@ -90,6 +91,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
             prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
 
         self.assertIn("### 技能 1: 波段低吸", prompt)
+        self.assertEqual(analyzer._resolved_prompt_state["skill_ids"], ["pullback"])
         self.assertNotIn("专注于趋势交易", prompt)
 
     def test_analysis_prompt_uses_injected_skill_sections_instead_of_hardcoded_trend_baseline(self) -> None:

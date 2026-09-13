@@ -14,6 +14,7 @@ PolygonFetcher - Polygon.io 美股数据源 (Priority 6)
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -25,7 +26,6 @@ from .us_index_mapping import is_us_stock_code
 
 logger = logging.getLogger(__name__)
 
-# 重试配置
 MAX_RETRIES = 2
 RETRY_DELAY = 1.0  # seconds
 
@@ -116,14 +116,14 @@ class PolygonFetcher(BaseFetcher):
                         attempt,
                         MAX_RETRIES + 1,
                     )
-                    import time
                     time.sleep(RETRY_DELAY * attempt)
                     continue
 
                 resp.raise_for_status()
                 data = resp.json()
 
-                if data.get("status") != "OK":
+                # Delayed subscriptions still return valid historical aggregates.
+                if data.get("status") not in {"OK", "DELAYED"}:
                     raise DataFetchError(
                         f"Polygon API 返回异常状态: {data.get('status')} "
                         f"({data.get('error', '')})"
@@ -158,7 +158,6 @@ class PolygonFetcher(BaseFetcher):
                 last_exception = e
                 logger.debug(f"[Polygon] 请求失败 (尝试 {attempt}): {e}")
                 if attempt <= MAX_RETRIES:
-                    import time
                     time.sleep(RETRY_DELAY * attempt)
                 else:
                     raise DataFetchError(
@@ -173,32 +172,33 @@ class PolygonFetcher(BaseFetcher):
         return pd.DataFrame()
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
-        """标准化列名为项目统一格式"""
+        """
+        保留 date 列供 BaseFetcher 清洗和排序，返回标准列。
+        """
         if df.empty:
             return pd.DataFrame(columns=STANDARD_COLUMNS)
 
-        # 设置日期索引（Fetcher 基类可能需要）
-        # 注意：不同版本的基类可能期望不同的列名
-        rename_map = {
-            "date": "date",   # 保持为 date 列
-        }
-        # 如果基类期望 Open/High/Low/Close/Volume 大写的列，则需要做映射
-        # 根据项目现有代码风格，通常保留为小写，由基类统一处理
-        # 这里保持与 yfinance_fetcher 返回一致的列名
-        column_order = [
-            "open", "high", "low", "close", "volume", "amount", "pct_chg"
-        ]
+        df = df.copy()
+        # BaseFetcher expects date as a column, not a same-named index.
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.sort_values("date").reset_index(drop=True)
 
-        # 补充缺失列
-        df = df.rename(columns=rename_map)
-        for col in column_order:
-            if col not in df.columns:
-                df[col] = None
-
-        # 计算涨跌幅
         if "close" in df.columns and "pct_chg" not in df.columns:
             df["pct_chg"] = df["close"].pct_change() * 100
 
-        # 返回标准列（加上可能需要的 date 列，由基类调用者决定）
-        # 如果基类需要 MultiIndex 或特定格式，可在此调整
-        return df[["date"] + column_order]
+        # 确保列名统一（原始列已经是小写，但为了健壮性显式重命名）
+        df = df.rename(columns={
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "volume": "volume",
+        })
+
+        # 补充缺失的标准列
+        for col in STANDARD_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+
+        return df[STANDARD_COLUMNS]
