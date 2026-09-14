@@ -9,7 +9,7 @@
 
 import platform
 import sys
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 from typing import List
 
 from bot.commands.base import BotCommand
@@ -61,7 +61,7 @@ class StatusCommand(BotCommand):
         from src.config import _uses_direct_env_provider, get_configured_llm_models
 
         status = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": beijing_now_naive().strftime("%Y-%m-%d %H:%M:%S"),
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "platform": platform.system(),
             "stock_count": len(config.stock_list),

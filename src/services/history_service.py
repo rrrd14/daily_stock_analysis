@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
+from src.time_utils import beijing_now_naive
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
@@ -383,7 +384,7 @@ class HistoryService:
             return []
 
         # Narrow down to same-stock recent news, then filter by analysis time window.
-        days = max(1, (datetime.now() - analysis.created_at).days + 1)
+        days = max(1, (beijing_now_naive() - analysis.created_at).days + 1)
         candidates = self.db.get_recent_news(code=analysis.code, days=days, limit=max(limit * 5, 50))
 
         start_time = analysis.created_at - timedelta(hours=6)
@@ -575,8 +576,8 @@ class HistoryService:
         Returns:
             Markdown formatted report string
         """
-        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else datetime.now().strftime("%Y-%m-%d")
-        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now().strftime("%H:%M:%S")
+        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else beijing_now_naive().strftime("%Y-%m-%d")
+        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else beijing_now_naive().strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
         analysis_date_label = "Analysis Date" if report_language == "en" else "分析日期"

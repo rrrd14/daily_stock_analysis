@@ -292,7 +292,19 @@ def get_stock_quote(stock_code: str) -> StockQuote:
             prev_close=result.get("prev_close"),
             volume=result.get("volume"),
             amount=result.get("amount"),
-            update_time=result.get("update_time")
+            update_time=result.get("update_time"),
+            # 行情证据透传（adapter -> service -> schema -> 客户端）
+            quote_time=result.get("quote_time"),
+            fetched_at=result.get("fetched_at"),
+            served_at=result.get("served_at"),
+            session_date=result.get("session_date"),
+            source=result.get("source"),
+            freshness=result.get("freshness"),
+            age_seconds=result.get("age_seconds"),
+            volume_unit=result.get("volume_unit"),
+            field_sources=result.get("field_sources"),
+            is_realtime=result.get("is_realtime"),
+            freshness_note=result.get("freshness_note"),
         )
         
     except HTTPException:

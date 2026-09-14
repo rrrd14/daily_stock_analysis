@@ -75,7 +75,12 @@ def test_failed_provider_diagnostics_do_not_include_exception_secrets():
     attempts = []
     _, source = DataFetcherManager([ak, yf]).get_daily_data('588000', min_records=10, diagnostics=attempts)
     assert source == 'YfinanceFetcher'
-    assert attempts[0] == {'source': 'AkshareFetcher', 'status': 'error', 'error_type': 'RuntimeError'}
+    assert attempts[0] == {
+        'source': 'AkshareFetcher',
+        'status': 'error',
+        'error_type': 'RuntimeError',
+        'reason': 'unknown',
+    }
 
 
 def test_explicit_source_bypasses_cache():

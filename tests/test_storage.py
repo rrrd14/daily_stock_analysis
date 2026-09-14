@@ -209,8 +209,11 @@ class TestStorage(unittest.TestCase):
 
             self.assertEqual(total, 1)
         finally:
-            temp_dir.cleanup()
+            # Dispose the SQLite engine before removing the temp dir; on Windows
+            # an open connection keeps the .db file locked and cleanup raises
+            # PermissionError (WinError 32).
             DatabaseManager.reset_instance()
+            temp_dir.cleanup()
 
 if __name__ == '__main__':
     unittest.main()

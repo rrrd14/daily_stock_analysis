@@ -14,6 +14,15 @@ class BacktestRunRequest(BaseModel):
     eval_window_days: Optional[int] = Field(None, ge=1, le=120, description="评估窗口（交易日数）")
     min_age_days: Optional[int] = Field(None, ge=0, le=365, description="分析记录最小天龄（0=不限）")
     limit: int = Field(200, ge=1, le=2000, description="最多处理的分析记录数")
+    engine_kind: Optional[str] = Field(
+        None,
+        description="引擎类型：ai_report_evaluation（报告事后评估，缺省）或 "
+                    "daily_return（从冻结快照计算日频回报率）；未注册名称会被拒绝",
+    )
+    snapshot_id: Optional[str] = Field(
+        None,
+        description="引用的冻结行情快照 ID；策略引擎（如 daily_return）必需且须合格",
+    )
 
 
 class BacktestRunResponse(BaseModel):
@@ -33,6 +42,53 @@ class BacktestRunRecord(BaseModel):
     finished_at: Optional[str] = None
     sha256: Optional[str] = None
     evidence: Optional[Dict[str, Any]] = None
+
+    # 冻结快照引用（WP4）：报告评估可能为空；策略引擎必须指向合格快照
+    snapshot_id: Optional[str] = Field(None, description="引用的冻结行情快照 ID")
+    data_quality_status: Optional[str] = Field(
+        None, description="快照质量等级：verified / partial / unknown"
+    )
+    input_eligibility: Optional[bool] = Field(
+        None, description="该快照是否满足默认策略收益计算的数据资格"
+    )
+    engine_kind: Optional[str] = Field(
+        None,
+        description="引擎类型：ai_report_evaluation（报告事后评估）或 "
+                    "daily_return（从冻结快照计算日频回报率）；未注册名称会被拒绝",
+    )
+    engine_version: Optional[str] = Field(None, description="引擎版本")
+
+
+class MarketSnapshotRecord(BaseModel):
+    """冻结行情快照的只读视图（`bars` 仅在显式请求时返回）。"""
+
+    snapshot_id: str
+    schema_version: Optional[str] = None
+    instrument: str
+    market: Optional[str] = None
+    interval: Optional[str] = None
+    requested_start: Optional[str] = None
+    requested_end: Optional[str] = None
+    resolved_start: Optional[str] = None
+    resolved_end: Optional[str] = None
+    rows: Optional[int] = None
+    source: Optional[str] = None
+    price_adjustment: Optional[str] = None
+    currency: Optional[str] = None
+    volume_unit: Optional[str] = None
+    coverage_complete: Optional[bool] = None
+    data_quality_status: Optional[str] = Field(
+        None, description="verified / partial / unknown"
+    )
+    input_eligibility: Optional[bool] = Field(
+        None, description="是否满足默认策略收益计算的数据资格"
+    )
+    quality: Optional[Dict[str, Any]] = Field(None, description="质量评估明细（含缺失项）")
+    payload_hash: Optional[str] = Field(None, description="冻结内容哈希")
+    created_at: Optional[str] = None
+    bars: Optional[List[Dict[str, Any]]] = Field(
+        None, description="冻结行情明细；仅 include_bars=true 时返回"
+    )
 
 
 class BacktestResultItem(BaseModel):

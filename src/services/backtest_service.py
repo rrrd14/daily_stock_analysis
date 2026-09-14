@@ -9,7 +9,7 @@ import logging
 import hashlib
 from pathlib import Path
 from uuid import uuid4
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, select
@@ -18,7 +18,9 @@ from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.backtest_run_repo import BacktestRunRepository, json_value
+from src.repositories.market_snapshot_repo import MarketDataSnapshotRepository
 from src.repositories.stock_repo import StockRepository
+from src.services.backtest_engine_registry import get_engine, implemented_kinds
 from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -34,10 +36,38 @@ class BacktestService:
         self.repo = BacktestRepository(self.db)
         self.stock_repo = StockRepository(self.db)
 
+    ENGINE_KIND_REPORT_EVALUATION = "ai_report_evaluation"
+    # 内置报告事后评估 + 注册表里的策略引擎；未注册的引擎名一律拒绝，避免把旧引擎
+    # 的运行结果标成组合/策略引擎，也避免「只记录 snapshot_id」被读成「消费了冻结行情」。
+    @classmethod
+    def _implemented_engine_kinds(cls) -> List[str]:
+        return [cls.ENGINE_KIND_REPORT_EVALUATION, *implemented_kinds()]
+
+
     def run_backtest(
         self, *, code=None, force=False, eval_window_days=None, min_age_days=None, limit=200,
+        snapshot_id: Optional[str] = None,
+        engine_kind: str = ENGINE_KIND_REPORT_EVALUATION,
     ) -> Dict[str, Any]:
-        """Record the inputs actually evaluated; never infer execution from a rollup."""
+        """Record the inputs actually evaluated; never infer execution from a rollup.
+
+        引擎门槛（WP4 第二阶段）：
+
+        - 内置 ``ai_report_evaluation``（报告事后评估）+ 注册表里的策略引擎。
+          未注册的 ``engine_kind`` 一律直接拒绝，不再「换个标签跑旧引擎」。
+        - 报告评估可附加 ``snapshot_id`` 作为**引用**（核对当时口径与质量），
+          证据里写明 ``consumed=false``：它读的是数据库/抓取路径，不是冻结 bars。
+        - 策略引擎（如 ``daily_return``）**必须**引用 ``input_eligibility=true``
+          且标的与 ``code`` 一致的快照；引擎从冻结 bars 计算，证据里 ``consumed=true``。
+        - 未知名/不存在的 ``snapshot_id`` 仍会被拒绝。
+        """
+        is_report_evaluation = engine_kind == self.ENGINE_KIND_REPORT_EVALUATION
+        handler = None if is_report_evaluation else get_engine(engine_kind)
+        if not is_report_evaluation and handler is None:
+            raise ValueError(
+                f"engine_kind={engine_kind!r} is not implemented. Implemented: "
+                f"{', '.join(self._implemented_engine_kinds())}"
+            )
         config = get_config()
         params = {
             "code": code, "force": force, "limit": int(limit),
@@ -50,21 +80,54 @@ class BacktestService:
             "engine_version": str(getattr(config, "backtest_engine_version", "v1")),
             "neutral_band_pct": float(getattr(config, "backtest_neutral_band_pct", 2.0)),
         }
+
+        snapshot_ref = self._resolve_snapshot_reference(
+            snapshot_id=snapshot_id, require_eligible=not is_report_evaluation,
+        )
         evidence = {
-            "schema_version": 1, "kind": "ai_report_evaluation",
+            "schema_version": 1, "kind": engine_kind,
             "parameters": {**params, **engine_settings},
             "code_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                            for path in (Path(__file__), Path(__file__).parents[1] / "core/backtest_engine.py")},
+                            for path in (Path(__file__),
+                                         Path(__file__).parents[1] / "core/backtest_engine.py",
+                                         Path(__file__).with_name("backtest_engine_registry.py"))},
             "limitations": ["Not a portfolio backtest; capital, fees and slippage are not modeled.",
                             "Adjustment is unknown; bar count does not validate trading-calendar continuity.",
                             "Current stored/fetched data does not prove historical point-in-time availability."],
             "items": [],
         }
+        if snapshot_ref is not None:
+            evidence["snapshot"] = {
+                "snapshot_id": snapshot_ref["snapshot_id"],
+                "data_quality_status": snapshot_ref["data_quality_status"],
+                "input_eligibility": snapshot_ref["input_eligibility"],
+                "coverage_complete": snapshot_ref["coverage_complete"],
+                # 报告评估只引用快照核对口径与质量（consumed=false）；
+                # 策略引擎会在 handler 里把它改成 consumed=true。
+                "consumed": False,
+            }
+            if is_report_evaluation:
+                evidence["limitations"].append(
+                    "The referenced snapshot was not consumed by this engine; it records the "
+                    "input quality of the run, it does not prove the frozen bars were used."
+                )
         run_id = uuid4().hex
         runs = BacktestRunRepository(self.db)
-        runs.create(run_id, evidence)
+        runs.create(
+            run_id, evidence,
+            snapshot_id=snapshot_ref["snapshot_id"] if snapshot_ref else None,
+            data_quality_status=snapshot_ref["data_quality_status"] if snapshot_ref else None,
+            input_eligibility=snapshot_ref["input_eligibility"] if snapshot_ref else None,
+            engine_kind=engine_kind,
+            engine_version=engine_settings["engine_version"],
+        )
         try:
-            stats = self._run_backtest(**params, audit_items=evidence["items"], engine_settings=engine_settings)
+            if is_report_evaluation:
+                stats = self._run_backtest(**params, audit_items=evidence["items"], engine_settings=engine_settings)
+            else:
+                stats = handler(
+                    self, code=code, snapshot=snapshot_ref, evidence=evidence, params=params,
+                )
             status = ("empty" if not stats["processed"] else
                       "partial" if stats["insufficient"] or stats["errors"] else "completed")
             evidence["counts"] = stats
@@ -83,6 +146,27 @@ class BacktestService:
 
     def get_runs(self):
         return BacktestRunRepository(self.db).recent()
+
+    def _resolve_snapshot_reference(self, *, snapshot_id, require_eligible=False):
+        """解析并校验快照引用。
+
+        报告评估只校验存在性：引用（核对当时口径与质量）**不等于消费**，它读的是
+        DB/抓取路径。策略引擎（``require_eligible=True``）还要求快照
+        ``input_eligibility=true``；真正消费由各引擎从快照 bars 完成。
+        """
+        if snapshot_id is None:
+            if require_eligible:
+                raise ValueError("a strategy engine requires an explicit eligible snapshot_id")
+            return None
+        snapshot = MarketDataSnapshotRepository(self.db).get(snapshot_id)
+        if snapshot is None:
+            raise ValueError(f"Unknown snapshot_id: {snapshot_id}")
+        if require_eligible and not snapshot["input_eligibility"]:
+            raise ValueError(
+                f"snapshot {snapshot_id} is not eligible for a strategy engine "
+                f"(data_quality_status={snapshot['data_quality_status']!r})"
+            )
+        return snapshot
 
     @staticmethod
     def _snapshot_bar(bar):

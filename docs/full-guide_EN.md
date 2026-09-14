@@ -563,6 +563,8 @@ crontab -e
 > Note: Scheduled mode reloads the saved `STOCK_LIST` before each run. If you also pass `--stocks`, it will not pin future scheduled executions to the startup snapshot; use a normal one-off run when you want to analyze a temporary stock list.
 >
 > When the built-in scheduler is started via `python main.py --schedule`, `python main.py --serve --schedule`, or an equivalent local mode, saving a new `SCHEDULE_TIME` from the WebUI will rebind the daily job on the next scheduler poll without restarting the process. The previous trigger time is removed instead of being kept alongside the new one.
+>
+> 🕒 **Beijing-time migration status**: `SCHEDULE_TIME`, default database timestamps, logging, the main entry and market reviews use `src/time_utils.py` independently of host `TZ`. Agent exposes `get_current_time` and refreshes `[PROGRAM_CLOCK]` each iteration. However, the 2026-09-14 review still found host-local clock calls in tasks, news, portfolios and some APIs; end-to-end migration is not complete, and legacy timestamps are not automatically converted. Keep deployment timezone set to `Asia/Shanghai` until the remaining paths are migrated, and distinguish source quote time from fetch time. See the [revised plan](quant-improvement-plan.md) and [data/time design](architecture/market-data-time-contract.md). The detailed internal documents are maintained in Chinese as requested; this public behavior note is synchronized.
 
 ---
 

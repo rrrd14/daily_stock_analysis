@@ -53,8 +53,10 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_get_env_file_value", return_value=None)
     def test_schedule_run_immediately_falls_back_to_legacy_run_immediately(
         self,
+        _mock_env_file_value,
         _mock_parse_yaml,
         _mock_setup_env,
     ) -> None:
@@ -88,8 +90,10 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_get_env_file_value", return_value=None)
     def test_empty_legacy_run_immediately_stays_false_when_schedule_alias_is_unset(
         self,
+        _mock_env_file_value,
         _mock_parse_yaml,
         _mock_setup_env,
     ) -> None:

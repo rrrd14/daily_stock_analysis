@@ -16,9 +16,11 @@ from api.v1.schemas.backtest import (
     BacktestRunRecord,
     BacktestResultItem,
     BacktestResultsResponse,
+    MarketSnapshotRecord,
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
+from src.repositories.market_snapshot_repo import MarketDataSnapshotRepository
 from src.services.backtest_service import BacktestService
 from src.storage import DatabaseManager
 
@@ -38,6 +40,30 @@ def get_backtest_run(run_id: str, db_manager: DatabaseManager = Depends(get_data
     if record is None:
         raise HTTPException(status_code=404, detail="Backtest run not found")
     return record
+
+@router.get("/snapshots", response_model=list[MarketSnapshotRecord], response_model_exclude_none=True)
+def get_market_snapshots(
+    instrument: Optional[str] = Query(None, description="按标的过滤，如 588000 / AAPL"),
+    limit: int = Query(20, ge=1, le=200, description="最多返回条数"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """列出冻结行情快照元数据（只读，不返回逐行行情）。"""
+    return MarketDataSnapshotRepository(db_manager).list(instrument=instrument, limit=limit)
+
+
+@router.get("/snapshots/{snapshot_id}", response_model=MarketSnapshotRecord)
+def get_market_snapshot(
+    snapshot_id: str,
+    include_bars: bool = Query(False, description="是否返回冻结行情明细"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """读取单个冻结快照的元数据、质量等级与（可选的）冻结行情明细。"""
+    record = MarketDataSnapshotRepository(db_manager).get(snapshot_id, detail=include_bars)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Market data snapshot not found")
+    return record
+
+
 
 
 def _validate_analysis_date_range(
@@ -76,8 +102,15 @@ def run_backtest(
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
             limit=request.limit,
+            snapshot_id=request.snapshot_id,
+            engine_kind=request.engine_kind or BacktestService.ENGINE_KIND_REPORT_EVALUATION,
         )
         return BacktestRunResponse(**stats)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
     except Exception as exc:
         logger.error(f"回测执行失败: {exc}", exc_info=True)
         raise HTTPException(

@@ -10,12 +10,35 @@
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, Dict, Any
 
 from src.repositories.stock_repo import StockRepository
+from src.time_utils import beijing_now
 
 logger = logging.getLogger(__name__)
+
+
+def _session_date_for(stock_code: str, quote_time: Optional[str]) -> Optional[str]:
+    """行情所属交易所的交易日（按市场时区），而不是北京时间日期。
+
+    美股收盘时刻在北京时间次日，交易所交易日仍按 America/New_York 计算。
+    无法解析或不认识的市场返回 None，不做猜测。
+    """
+    if not quote_time:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        from src.core.trading_calendar import MARKET_TIMEZONE, get_market_for_stock
+
+        moment = datetime.fromisoformat(quote_time)
+        tz_name = MARKET_TIMEZONE.get(get_market_for_stock(stock_code) or "")
+        if tz_name:
+            moment = moment.astimezone(ZoneInfo(tz_name))
+        return moment.date().isoformat()
+    except (ValueError, TypeError, KeyError, OSError):
+        return None
 
 
 class StockService:
@@ -63,6 +86,20 @@ class StockService:
             # - pre_close -> prev_close
             # - volume -> volume
             # - amount -> amount
+            #
+            # 证据字段必须与本响应一同返回：行情时间(quote_time) 表示来源提供的
+            # 行情发生时刻，抓取时间(fetched_at) 表示本次收到数据的时刻，
+            # 返回时刻(served_at) 只表示服务时间。时效未知/过期时不得表述为当前实时。
+            provenance = quote.provenance() if hasattr(quote, "provenance") else {}
+            fetched_at = provenance.get("fetched_at") or beijing_now().isoformat(timespec="seconds")
+            quote_time = provenance.get("quote_time")
+            source = getattr(quote, "source", None)
+            source_name = (
+                source.value if hasattr(source, "value")
+                else (str(source) if source is not None else None)
+            )
+            freshness = provenance.get("freshness") or "unknown"
+
             return {
                 "stock_code": getattr(quote, "code", stock_code),
                 "stock_name": getattr(quote, "name", None),
@@ -75,7 +112,20 @@ class StockService:
                 "prev_close": getattr(quote, "pre_close", None),
                 "volume": getattr(quote, "volume", None),
                 "amount": getattr(quote, "amount", None),
-                "update_time": datetime.now().isoformat(),
+                # 兼容字段：语义明确为本次抓取时间（北京时间，含 +08:00）
+                "update_time": fetched_at,
+                # === 追加证据字段 ===
+                "quote_time": quote_time,
+                "fetched_at": fetched_at,
+                "served_at": beijing_now().isoformat(timespec="seconds"),
+                "session_date": _session_date_for(stock_code, quote_time),
+                "source": source_name,
+                "freshness": freshness,
+                "age_seconds": provenance.get("age_seconds"),
+                "volume_unit": provenance.get("volume_unit") or getattr(quote, "volume_unit", None),
+                "field_sources": provenance.get("field_sources"),
+                "is_realtime": freshness == "recent",
+                "freshness_note": provenance.get("freshness_note"),
             }
             
         except ImportError:
@@ -170,6 +220,7 @@ class StockService:
         Returns:
             占位行情数据
         """
+        now_iso = beijing_now().isoformat(timespec="seconds")
         return {
             "stock_code": stock_code,
             "stock_name": f"股票{stock_code}",
@@ -182,5 +233,16 @@ class StockService:
             "prev_close": None,
             "volume": None,
             "amount": None,
-            "update_time": datetime.now().isoformat(),
+            "update_time": now_iso,
+            "quote_time": None,
+            "fetched_at": now_iso,
+            "served_at": now_iso,
+            "session_date": None,
+            "source": "placeholder",
+            "freshness": "unknown",
+            "age_seconds": None,
+            "volume_unit": "unknown",
+            "field_sources": {},
+            "is_realtime": False,
+            "freshness_note": "占位数据：未取得真实行情，不能作为实时行情使用。",
         }

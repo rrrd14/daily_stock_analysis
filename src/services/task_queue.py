@@ -20,6 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
 from datetime import datetime
+from src.time_utils import beijing_now_naive
 from enum import Enum
 from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal
 
@@ -551,7 +552,7 @@ class AnalysisTaskQueue:
             if not task:
                 return None
             task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now()
+            task.started_at = beijing_now_naive()
             task.message = "正在分析中..."
             task.progress = 10
         
@@ -583,7 +584,7 @@ class AnalysisTaskQueue:
                     if task:
                         task.status = TaskStatus.COMPLETED
                         task.progress = 100
-                        task.completed_at = datetime.now()
+                        task.completed_at = beijing_now_naive()
                         task.result = result
                         task.message = "分析完成"
                         task.stock_name = result.get("stock_name", task.stock_name)
@@ -612,7 +613,7 @@ class AnalysisTaskQueue:
                 task = self._tasks.get(task_id)
                 if task:
                     task.status = TaskStatus.FAILED
-                    task.completed_at = datetime.now()
+                    task.completed_at = beijing_now_naive()
                     task.error = error_msg[:200]  # 限制错误信息长度
                     task.message = f"分析失败: {error_msg[:50]}"
                     

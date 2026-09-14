@@ -91,6 +91,34 @@ def is_market_open(market: str, check_date: date) -> bool:
         return True
 
 
+def count_sessions(market: Optional[str], start: date, end: date) -> Optional[int]:
+    """区间内该市场的交易所 session 数；**无法判定时返回 None，绝不猜测**。
+
+    与 ``is_market_open`` 的 fail-open 相反，这里返回 None 而不是「全部算交易日」：
+    调用方（快照覆盖判定）只在真的拿到日历时才使用会话数，否则退回「只看首尾日期」，
+    这样「日历不可用」不会被伪装成「数据完整」。
+
+    区间非法、市场未知、日历未安装或区间超出日历覆盖范围，一律返回 None。
+    """
+    if start is None or end is None or start > end:
+        return None
+    if not _XCALS_AVAILABLE:
+        return None
+    ex = MARKET_EXCHANGE.get(market or "")
+    if not ex:
+        return None
+    try:
+        cal = xcals.get_calendar(ex)
+        sessions = cal.sessions_in_range(
+            datetime(start.year, start.month, start.day),
+            datetime(end.year, end.month, end.day),
+        )
+        return int(len(sessions))
+    except Exception as e:
+        logger.warning("trading_calendar.count_sessions fail-open to None: %s", e)
+        return None
+
+
 def get_market_now(
     market: Optional[str], current_time: Optional[datetime] = None
 ) -> datetime:

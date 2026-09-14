@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from data_provider.realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult, TrendStatus
 from src.core.pipeline import StockAnalysisPipeline
+from src.time_utils import beijing_now
 
 
 def _make_realtime_quote(
@@ -31,6 +32,8 @@ def _make_realtime_quote(
     volume: int = 13995600,
     change_pct: float = 0.96,
 ) -> UnifiedRealtimeQuote:
+    # A fresh quote_time is required: the pipeline only synthesizes an intraday
+    # bar when provenance freshness is "recent" (see _augment_historical_with_realtime).
     return UnifiedRealtimeQuote(
         code="600519",
         name="贵州茅台",
@@ -41,6 +44,7 @@ def _make_realtime_quote(
         low=low,
         volume=volume,
         change_pct=change_pct,
+        quote_time=beijing_now().isoformat(timespec="seconds"),
     )
 
 

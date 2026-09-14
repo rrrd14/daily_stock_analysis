@@ -79,6 +79,29 @@ class RSIStatus(Enum):
     OVERSOLD = "超卖"         # RSI < 30
 
 
+class IndicatorValidity(Enum):
+    """单个指标的有效性状态（显式，不从默认枚举推断）。"""
+    VALID = "valid"              # 输入窗口完整且输出有限
+    INSUFFICIENT = "insufficient"  # 观测不足（样本不够/整段缺失）
+    INVALID = "invalid"          # 输入存在缺口或非有限值
+
+
+class SignalStatus(Enum):
+    """综合信号资格状态。
+
+    - OK: 所有 required 指标有效，可生成可执行信号
+    - INSUFFICIENT_DATA: 缺少 required 观测，不生成可执行信号
+    - INVALID_DATA: required 指标输入存在缺口/非法值，不生成可执行信号
+    """
+    OK = "ok"
+    INSUFFICIENT_DATA = "insufficient_data"
+    INVALID_DATA = "invalid_data"
+
+
+# 参与默认可执行信号判定所必需的指标
+REQUIRED_INDICATORS = ("ma", "volume", "macd", "rsi")
+
+
 @dataclass
 class TrendAnalysisResult:
     """趋势分析结果"""
@@ -131,7 +154,13 @@ class TrendAnalysisResult:
     signal_score: int = 0            # 综合评分 0-100
     signal_reasons: List[str] = field(default_factory=list)
     risk_factors: List[str] = field(default_factory=list)
-    
+
+    # 信号资格（显式有效性，防止用默认枚举当作有效指标参与评分）
+    signal_status: SignalStatus = SignalStatus.OK
+    actionable: bool = True          # False 时不生成可执行买卖信号
+    score_status: str = "complete"   # complete / partial
+    indicator_quality: Dict[str, str] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'code': self.code,
@@ -155,6 +184,10 @@ class TrendAnalysisResult:
             'signal_score': self.signal_score,
             'signal_reasons': self.signal_reasons,
             'risk_factors': self.risk_factors,
+            'signal_status': self.signal_status.value,
+            'actionable': self.actionable,
+            'score_status': self.score_status,
+            'indicator_quality': dict(self.indicator_quality),
             'macd_dif': self.macd_dif,
             'macd_dea': self.macd_dea,
             'macd_bar': self.macd_bar,
@@ -218,6 +251,13 @@ class StockTrendAnalyzer:
         if df is None or df.empty or len(df) < 20:
             logger.warning(f"{code} 数据不足，无法进行趋势分析")
             result.risk_factors.append("数据不足，无法完成分析")
+            result.signal_status = SignalStatus.INSUFFICIENT_DATA
+            result.actionable = False
+            result.score_status = "partial"
+            result.indicator_quality = {
+                key: IndicatorValidity.INSUFFICIENT.value for key in REQUIRED_INDICATORS
+            }
+            result.buy_signal = BuySignal.HOLD
             return result
         
         # 确保数据按日期排序
@@ -258,7 +298,10 @@ class StockTrendAnalyzer:
         # 6. RSI 分析
         self._analyze_rsi(df, result)
 
-        # 7. 生成买入信号
+        # 7. 指标有效性评估（显式 valid/insufficient/invalid，供评分前置判断）
+        result.indicator_quality = self._assess_indicator_quality(df, result)
+
+        # 8. 生成买入信号（有效性作为评分前置条件）
         self._generate_signal(result)
 
         return result
@@ -318,8 +361,10 @@ class StockTrendAnalyzer:
             delta = df['close'].diff()
 
             # 分离上涨和下跌
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
+            # 注意：必须保留 NaN。此前用 where(cond, 0) 会把「缺失价格的差分」
+            # 静默变成 0 涨跌，使缺口窗口被算成横盘并产生有限 RSI。
+            gain = delta.clip(lower=0)
+            loss = (-delta).clip(lower=0)
 
             # 计算平均涨跌幅
             avg_gain = gain.rolling(window=period).mean()
@@ -415,27 +460,52 @@ class StockTrendAnalyzer:
         偏好：缩量回调 > 放量上涨 > 缩量上涨 > 放量下跌
         """
         if len(df) < 6:
-            return
-        
-        latest = df.iloc[-1]
-        vol_5d_avg = df['volume'].iloc[-6:-1].mean()
-        latest_volume = latest['volume']
-        
-        source_mixed = 'data_source' in df and df['data_source'].iloc[-6:].nunique(dropna=False) > 1
-        if (
-            source_mixed
-            or not np.isfinite(vol_5d_avg)
-            or vol_5d_avg <= 0
-            or not np.isfinite(latest_volume)
-        ):
-            result.volume_trend = "成交量来源混合或量能数据无效，无法计算放量倍数"
+            result.volume_trend = "不足6条行情，无法计算放量倍数"
             result.risk_factors.append(result.volume_trend)
             return
+
+        latest = df.iloc[-1]
+        prior_volumes = df['volume'].iloc[-6:-1].to_numpy(dtype=float)
+        latest_volume = latest['volume']
+
+        source_mixed = 'data_source' in df and df['data_source'].iloc[-6:].nunique(dropna=False) > 1
+        if source_mixed:
+            result.volume_trend = "成交量来源混合，无法计算放量倍数"
+            result.risk_factors.append(result.volume_trend)
+            return
+
+        # 前5个交易日成交量必须全部有效：缺失一条即视为不足，
+        # 不能依赖 pandas mean() 的 skipna 用4条算平均（会与基础指标入口不一致）。
+        prior_complete = len(prior_volumes) == 5 and bool(np.isfinite(prior_volumes).all())
+
+        prev_close = df['close'].iloc[-2]
+        latest_close = latest['close']
+        prices_valid = (
+            np.isfinite(prev_close)
+            and np.isfinite(latest_close)
+            and float(prev_close) > 0
+        )
+
+        if not prior_complete or not np.isfinite(latest_volume) or not prices_valid:
+            result.volume_trend = "前5个交易日成交量或价格存在缺失，无法计算放量倍数"
+            result.risk_factors.append(result.volume_trend)
+            return
+
+        vol_5d_avg = float(prior_volumes.mean())
+        if not np.isfinite(vol_5d_avg) or vol_5d_avg <= 0:
+            result.volume_trend = "前5个交易日均量为0，无法计算放量倍数"
+            result.risk_factors.append(result.volume_trend)
+            return
+
         result.volume_ratio_5d = float(latest_volume) / vol_5d_avg
-        
+        if not np.isfinite(result.volume_ratio_5d):
+            result.volume_ratio_5d = None
+            result.volume_trend = "放量倍数非有限值，无法计算"
+            result.risk_factors.append(result.volume_trend)
+            return
+
         # 判断价格变化
-        prev_close = df.iloc[-2]['close']
-        price_change = (latest['close'] - prev_close) / prev_close * 100
+        price_change = (float(latest_close) - float(prev_close)) / float(prev_close) * 100
         
         # 量能状态判断
         if result.volume_ratio_5d >= self.VOLUME_HEAVY_RATIO:
@@ -499,7 +569,16 @@ class StockTrendAnalyzer:
         - 死叉：DIF 下穿 DEA
         """
         if len(df) < self.MACD_SLOW:
-            result.macd_signal = "数据不足"
+            result.macd_signal = f"数据不足（需≥{self.MACD_SLOW}条行情），MACD 不可用"
+            result.risk_factors.append(result.macd_signal)
+            return
+
+        # 缺口规则：EMA 在 NaN 缺口之后仍会继续产出有限值，仅靠输出 NaN 防御会漏判。
+        # 要求最近 MACD_SLOW 条收盘价无缺口，否则不认证 MACD 有效。
+        recent_closes = df['close'].iloc[-self.MACD_SLOW:].to_numpy(dtype=float)
+        if len(recent_closes) < self.MACD_SLOW or not np.isfinite(recent_closes).all():
+            result.macd_signal = "MACD 数据无效（最近窗口存在价格缺口）"
+            result.risk_factors.append(result.macd_signal)
             return
 
         latest = df.iloc[-1]
@@ -580,8 +659,17 @@ class StockTrendAnalyzer:
         - RSI < 30：超卖，关注反弹
         - 40-60：中性区域
         """
-        if len(df) < self.RSI_LONG:
-            result.rsi_signal = "数据不足"
+        if len(df) <= self.RSI_LONG:
+            result.rsi_signal = f"数据不足（需>{self.RSI_LONG}条行情），RSI 不可用"
+            result.risk_factors.append(result.rsi_signal)
+            return
+
+        # 缺口规则：RSI(N) 依赖 N 个价格变化（即 N+1 个有效收盘），
+        # 窗口内存在缺口时不认证有效，避免缺口被当作零涨跌。
+        recent_closes = df['close'].iloc[-(self.RSI_LONG + 1):].to_numpy(dtype=float)
+        if len(recent_closes) < self.RSI_LONG + 1 or not np.isfinite(recent_closes).all():
+            result.rsi_signal = "RSI 数据无效（最近窗口存在价格缺口）"
+            result.risk_factors.append(result.rsi_signal)
             return
 
         latest = df.iloc[-1]
@@ -626,6 +714,126 @@ class StockTrendAnalyzer:
             result.rsi_status = RSIStatus.OVERSOLD
             result.rsi_signal = f"⭐ RSI超卖({rsi_mid:.1f}<30)，反弹机会大"
 
+    @staticmethod
+    def _dedupe(items: List[str]) -> List[str]:
+        """去重并保持顺序，避免评分分支覆盖上游已记录的风险/理由。"""
+        seen = set()
+        output: List[str] = []
+        for item in items:
+            if item and item not in seen:
+                seen.add(item)
+                output.append(item)
+        return output
+
+    @staticmethod
+    def _infer_indicator_quality(key: str, result: TrendAnalysisResult) -> str:
+        """缺少显式有效性映射时的兜底推断（例如直接调用 _generate_signal）。
+
+        只能依据已有数值判断，无法校验输入窗口缺口，因此 analyze() 路径必须
+        使用 _assess_indicator_quality() 的结果。
+        """
+        def _finite(value: Any) -> bool:
+            try:
+                return bool(np.isfinite(value))
+            except (TypeError, ValueError):
+                return False
+
+        if key == 'ma':
+            ok = (
+                _finite(result.ma5) and _finite(result.ma10) and _finite(result.ma20)
+                and result.ma5 > 0 and result.ma10 > 0 and result.ma20 > 0
+            )
+        elif key == 'volume':
+            ok = _finite(result.volume_ratio_5d)
+        elif key == 'macd':
+            ok = _finite(result.macd_dif) and _finite(result.macd_dea) and _finite(result.macd_bar)
+        elif key == 'rsi':
+            ok = _finite(result.rsi_6) and _finite(result.rsi_12) and _finite(result.rsi_24)
+        else:
+            ok = False
+        return IndicatorValidity.VALID.value if ok else IndicatorValidity.INSUFFICIENT.value
+
+    def _assess_indicator_quality(
+        self, df: pd.DataFrame, result: TrendAnalysisResult
+    ) -> Dict[str, str]:
+        """按输入窗口完整性显式判定每个指标的有效性。
+
+        - VALID：窗口完整且输出有限
+        - INSUFFICIENT：观测不足（样本不够或整段缺失）
+        - INVALID：输入窗口存在缺口 / 非有限值
+        """
+        valid = IndicatorValidity.VALID.value
+        insufficient = IndicatorValidity.INSUFFICIENT.value
+        invalid = IndicatorValidity.INVALID.value
+
+        quality: Dict[str, str] = {}
+        closes = df['close']
+        row_count = len(df)
+
+        def _finite(value: Any) -> bool:
+            try:
+                return bool(np.isfinite(value))
+            except (TypeError, ValueError):
+                return False
+
+        def _window_finite(series: pd.Series, size: int) -> bool:
+            if row_count < size:
+                return False
+            values = series.iloc[-size:].to_numpy(dtype=float)
+            return len(values) == size and bool(np.isfinite(values).all())
+
+        # 均线 / 趋势：需要最近 20 条收盘有效
+        if _window_finite(closes, 20) and _finite(result.ma5) and _finite(result.ma10) and _finite(result.ma20):
+            quality['ma'] = valid
+        elif row_count < 20:
+            quality['ma'] = insufficient
+        else:
+            quality['ma'] = invalid
+
+        # MA60 为可选指标，不参与 required 判定
+        quality['ma60'] = valid if _finite(result.ma60) else insufficient
+
+        # 量能：需要最近 6 条收盘 + 前 5 个交易日成交量有效
+        source_mixed = (
+            'data_source' in df
+            and df['data_source'].iloc[-6:].nunique(dropna=False) > 1
+        )
+        if row_count < 6 or result.volume_ratio_5d is None:
+            quality['volume'] = insufficient
+        elif source_mixed or not _window_finite(closes, 6):
+            quality['volume'] = invalid
+        elif not _finite(result.volume_ratio_5d):
+            quality['volume'] = invalid
+        else:
+            quality['volume'] = valid
+
+        # MACD：预热 + 最近 MACD_SLOW 条收盘无缺口
+        if row_count < self.MACD_SLOW:
+            quality['macd'] = insufficient
+        elif not _window_finite(closes, self.MACD_SLOW):
+            quality['macd'] = invalid
+        elif result.macd_dif is None or result.macd_dea is None or result.macd_bar is None:
+            quality['macd'] = insufficient
+        elif not (_finite(result.macd_dif) and _finite(result.macd_dea) and _finite(result.macd_bar)):
+            quality['macd'] = invalid
+        else:
+            quality['macd'] = valid
+
+        # RSI：预热 + 最近 RSI_LONG+1 条收盘无缺口
+        rsi_window = self.RSI_LONG + 1
+        if row_count < rsi_window:
+            quality['rsi'] = insufficient
+        elif not _window_finite(closes, rsi_window):
+            quality['rsi'] = invalid
+        elif result.rsi_6 is None or result.rsi_12 is None or result.rsi_24 is None:
+            quality['rsi'] = insufficient
+        elif not (_finite(result.rsi_6) and _finite(result.rsi_12) and _finite(result.rsi_24)):
+            quality['rsi'] = invalid
+        else:
+            quality['rsi'] = valid
+
+        return quality
+
     def _generate_signal(self, result: TrendAnalysisResult) -> None:
         """
         生成买入信号
@@ -642,6 +850,17 @@ class StockTrendAnalyzer:
         reasons = []
         risks = []
 
+        # 显式有效性：analyze() 路径会提供 indicator_quality；
+        # 直接调用本方法时按已计算数值兜底推断，绝不从默认枚举假定有效。
+        quality = dict(result.indicator_quality or {})
+        for key in REQUIRED_INDICATORS:
+            quality.setdefault(key, self._infer_indicator_quality(key, result))
+
+        ma_valid = quality.get('ma') == IndicatorValidity.VALID.value
+        volume_valid = quality.get('volume') == IndicatorValidity.VALID.value
+        macd_valid = quality.get('macd') == IndicatorValidity.VALID.value
+        rsi_valid = quality.get('rsi') == IndicatorValidity.VALID.value
+
         # === 趋势评分（30分）===
         trend_scores = {
             TrendStatus.STRONG_BULL: 30,
@@ -652,13 +871,16 @@ class StockTrendAnalyzer:
             TrendStatus.BEAR: 4,
             TrendStatus.STRONG_BEAR: 0,
         }
-        trend_score = trend_scores.get(result.trend_status, 12)
-        score += trend_score
+        if ma_valid:
+            trend_score = trend_scores.get(result.trend_status, 12)
+            score += trend_score
 
-        if result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
-            reasons.append(f"✅ {result.trend_status.value}，顺势做多")
-        elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
-            risks.append(f"⚠️ {result.trend_status.value}，不宜做多")
+            if result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
+                reasons.append(f"✅ {result.trend_status.value}，顺势做多")
+            elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
+                risks.append(f"⚠️ {result.trend_status.value}，不宜做多")
+        else:
+            risks.append("⚠️ 均线趋势数据不足或存在缺口，本次不计入趋势评分")
 
         # === 乖离率评分（20分，强势趋势补偿）===
         bias = result.bias_ma5
@@ -675,7 +897,10 @@ class StockTrendAnalyzer:
             effective_threshold = base_threshold
             is_strong_trend = False
 
-        if bias < 0:
+        if not ma_valid:
+            # 均线无效时不参与评分，避免把 NaN 兜底成 0 后仍然加分
+            risks.append("⚠️ 乖离率依赖均线，均线无效时不计入评分")
+        elif bias < 0:
             # Price below MA5 (pullback)
             if bias > -3:
                 score += 20
@@ -717,20 +942,24 @@ class StockTrendAnalyzer:
             VolumeStatus.HEAVY_VOLUME_DOWN: 0,    # 放量下跌最差
         }
         vol_score = volume_scores.get(result.volume_status, 8)
-        score += vol_score
+        if volume_valid:
+            score += vol_score
 
-        if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:
-            reasons.append("✅ 缩量回调，主力洗盘")
-        elif result.volume_status == VolumeStatus.HEAVY_VOLUME_DOWN:
-            risks.append("⚠️ 放量下跌，注意风险")
+            if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:
+                reasons.append("✅ 缩量回调，主力洗盘")
+            elif result.volume_status == VolumeStatus.HEAVY_VOLUME_DOWN:
+                risks.append("⚠️ 放量下跌，注意风险")
+        else:
+            risks.append("⚠️ 量能数据无效或不足，本次不计入量能评分")
 
         # === 支撑评分（10分）===
-        if result.support_ma5:
-            score += 5
-            reasons.append("✅ MA5支撑有效")
-        if result.support_ma10:
-            score += 5
-            reasons.append("✅ MA10支撑有效")
+        if ma_valid:
+            if result.support_ma5:
+                score += 5
+                reasons.append("✅ MA5支撑有效")
+            if result.support_ma10:
+                score += 5
+                reasons.append("✅ MA10支撑有效")
 
         # === MACD 评分（15分）===
         macd_scores = {
@@ -743,14 +972,18 @@ class StockTrendAnalyzer:
             MACDStatus.DEATH_CROSS: 0,        # 死叉
         }
         macd_score = macd_scores.get(result.macd_status, 5)
-        score += macd_score
+        if macd_valid:
+            score += macd_score
 
-        if result.macd_status in [MACDStatus.GOLDEN_CROSS_ZERO, MACDStatus.GOLDEN_CROSS]:
-            reasons.append(f"✅ {result.macd_signal}")
-        elif result.macd_status in [MACDStatus.DEATH_CROSS, MACDStatus.CROSSING_DOWN]:
-            risks.append(f"⚠️ {result.macd_signal}")
+            if result.macd_signal:
+                if result.macd_status in [MACDStatus.GOLDEN_CROSS_ZERO, MACDStatus.GOLDEN_CROSS]:
+                    reasons.append(f"✅ {result.macd_signal}")
+                elif result.macd_status in [MACDStatus.DEATH_CROSS, MACDStatus.CROSSING_DOWN]:
+                    risks.append(f"⚠️ {result.macd_signal}")
+                else:
+                    reasons.append(result.macd_signal)
         else:
-            reasons.append(result.macd_signal)
+            risks.append("⚠️ MACD 数据无效或不足，本次不计入 MACD 评分")
 
         # === RSI 评分（10分）===
         rsi_scores = {
@@ -761,21 +994,57 @@ class StockTrendAnalyzer:
             RSIStatus.OVERBOUGHT: 0,       # 超买最差
         }
         rsi_score = rsi_scores.get(result.rsi_status, 5)
-        score += rsi_score
+        if rsi_valid:
+            score += rsi_score
 
-        if result.rsi_status in [RSIStatus.OVERSOLD, RSIStatus.STRONG_BUY]:
-            reasons.append(f"✅ {result.rsi_signal}")
-        elif result.rsi_status == RSIStatus.OVERBOUGHT:
-            risks.append(f"⚠️ {result.rsi_signal}")
+            if result.rsi_signal:
+                if result.rsi_status in [RSIStatus.OVERSOLD, RSIStatus.STRONG_BUY]:
+                    reasons.append(f"✅ {result.rsi_signal}")
+                elif result.rsi_status == RSIStatus.OVERBOUGHT:
+                    risks.append(f"⚠️ {result.rsi_signal}")
+                else:
+                    reasons.append(result.rsi_signal)
         else:
-            reasons.append(result.rsi_signal)
+            risks.append("⚠️ RSI 数据无效或不足，本次不计入 RSI 评分")
 
         # === 综合判断 ===
-        result.signal_score = score
-        result.signal_reasons = reasons
-        result.risk_factors = risks
+        # 合并上游风险（MA60/量能/MACD/RSI 已写入 result.risk_factors），不覆盖
+        result.signal_reasons = self._dedupe(reasons)
+        result.risk_factors = self._dedupe(list(result.risk_factors) + risks)
+        result.signal_score = int(score) if np.isfinite(score) else 0
+
+        missing = [
+            key for key in REQUIRED_INDICATORS
+            if quality.get(key) != IndicatorValidity.VALID.value
+        ]
+
+        if missing:
+            # 数据不足或存在缺口：允许展示已有效指标，但不生成可执行买卖信号
+            invalid = [
+                key for key in missing
+                if quality.get(key) == IndicatorValidity.INVALID.value
+            ]
+            result.signal_status = (
+                SignalStatus.INVALID_DATA if invalid else SignalStatus.INSUFFICIENT_DATA
+            )
+            result.actionable = False
+            result.score_status = "partial"
+            result.buy_signal = BuySignal.HOLD
+            pending = "、".join(
+                ("%s(缺口/非法)" % key) if key in invalid else ("%s(不足)" % key)
+                for key in missing
+            )
+            result.risk_factors = self._dedupe(
+                result.risk_factors
+                + [f"⚠️ 必需指标未达标：{pending}；本次不生成可执行买卖信号"]
+            )
+            return
 
         # 生成买入信号（调整阈值以适应新的100分制）
+        result.signal_status = SignalStatus.OK
+        result.actionable = True
+        result.score_status = "complete"
+
         if score >= 75 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
             result.buy_signal = BuySignal.STRONG_BUY
         elif score >= 60 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL, TrendStatus.WEAK_BULL]:
@@ -828,8 +1097,11 @@ class StockTrendAnalyzer:
             f"   RSI(24): {format(result.rsi_24, '.1f') if result.rsi_24 is not None else '数据不足'}",
             f"   信号: {result.rsi_signal}",
             f"",
-            f"🎯 操作建议: {result.buy_signal.value}",
-            f"   综合评分: {result.signal_score}/100",
+            f"🎯 操作建议: {result.buy_signal.value}"
+            + ("" if result.actionable else "（数据不足，仅展示有效指标，不构成可执行信号）"),
+            f"   综合评分: {result.signal_score}/100"
+            + ("" if result.score_status == "complete" else "（有效指标部分评分）"),
+            f"   信号状态: {result.signal_status.value}",
         ]
 
         if result.signal_reasons:

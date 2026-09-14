@@ -20,7 +20,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 from typing import Optional, Union, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -376,7 +376,7 @@ def _handle_sync_analysis(
             stock_code=result.get("stock_code", stock_code),
             stock_name=result.get("stock_name"),
             report=report.model_dump() if report else None,
-            created_at=datetime.now().isoformat()
+            created_at=beijing_now_naive().isoformat()
         )
 
     except HTTPException:
@@ -515,7 +515,7 @@ async def task_stream():
                 except asyncio.TimeoutError:
                     # 心跳
                     yield _format_sse_event("heartbeat", {
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": beijing_now_naive().isoformat()
                     })
         except asyncio.CancelledError:
             logger.debug("SSE client disconnected, cancelling event generator")
@@ -663,7 +663,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_code=record.code,
                     stock_name=stock_name,
                     report=report_dict,
-                    created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
+                    created_at=record.created_at.isoformat() if record.created_at else beijing_now_naive().isoformat()
                 ),
                 error=None
             )
@@ -766,7 +766,7 @@ def _build_analysis_report(
         stock_name=localized_stock_name,
         report_type=meta_data.get("report_type", "detailed"),
         report_language=report_language,
-        created_at=meta_data.get("created_at", datetime.now().isoformat()),
+        created_at=meta_data.get("created_at", beijing_now_naive().isoformat()),
         current_price=meta_data.get("current_price"),
         change_pct=meta_data.get("change_pct"),
         model_used=normalize_model_used(meta_data.get("model_used")),

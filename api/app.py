@@ -20,7 +20,7 @@ import mimetypes
 import os
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 from pathlib import Path
 from urllib.parse import unquote
 from typing import List, Optional
@@ -255,7 +255,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         """健康检查接口"""
         return HealthResponse(
             status="ok",
-            timestamp=datetime.now().isoformat()
+            timestamp=beijing_now_naive().isoformat()
         )
     
     # ============================================================

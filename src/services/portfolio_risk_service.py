@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from src.time_utils import beijing_today
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, get_config
@@ -34,7 +35,7 @@ class PortfolioRiskService:
         as_of: Optional[date] = None,
         cost_method: str = "fifo",
     ) -> Dict[str, Any]:
-        as_of_date = as_of or date.today()
+        as_of_date = as_of or beijing_today()
         snapshot = self.portfolio_service.get_portfolio_snapshot(
             account_id=account_id,
             as_of=as_of_date,

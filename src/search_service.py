@@ -18,6 +18,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from src.time_utils import BEIJING, beijing_now, beijing_now_naive, beijing_today
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
@@ -1099,8 +1100,8 @@ class AnspireSearchProvider(BaseSearchProvider):
             payload = {
                 "query": query,
                 "top_k": min(max_results,50), 
-                "FromTime": (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
-                "ToTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "FromTime": (beijing_now_naive() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
+                "ToTime": beijing_now_naive().strftime("%Y-%m-%d %H:%M:%S")
             }
             
             # 执行搜索
@@ -1346,7 +1347,7 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             from dateutil import parser as dateutil_parser
             dt = dateutil_parser.parse(date_str, fuzzy=True)
             from datetime import timedelta, timezone
-            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now()
+            now = datetime.now(timezone.utc) if dt.tzinfo else beijing_now_naive()
             return (now - dt) <= timedelta(days=days + 1)  # +1 buffer
         except Exception:
             return True  # Keep result when date is unparseable
@@ -2507,7 +2508,7 @@ class SearchService:
             return None
         if isinstance(value, datetime):
             if value.tzinfo is not None:
-                local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+                local_tz = BEIJING
                 return value.astimezone(local_tz).date()
             return value.date()
         if isinstance(value, date):
@@ -2516,8 +2517,8 @@ class SearchService:
         text = str(value).strip()
         if not text:
             return None
-        now = datetime.now()
-        local_tz = now.astimezone().tzinfo or timezone.utc
+        now = beijing_now()
+        local_tz = BEIJING
 
         relative_date = cls._parse_relative_news_date(text, now)
         if relative_date:
@@ -2599,7 +2600,7 @@ class SearchService:
         if not response.success or not response.results:
             return response
 
-        today = datetime.now().date()
+        today = beijing_today()
         earliest = today - timedelta(days=max(0, int(search_days) - 1))
         latest = today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
 

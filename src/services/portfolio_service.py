@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+from src.time_utils import beijing_today
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
@@ -449,7 +450,7 @@ class PortfolioService:
         as_of: Optional[date] = None,
         cost_method: str = "fifo",
     ) -> Dict[str, Any]:
-        as_of_date = as_of or date.today()
+        as_of_date = as_of or beijing_today()
         method = self._normalize_cost_method(cost_method)
 
         if account_id is not None:
@@ -580,7 +581,7 @@ class PortfolioService:
         as_of: Optional[date] = None,
     ) -> Dict[str, Any]:
         """Refresh account FX pairs online with stale fallback when fetch fails."""
-        as_of_date = as_of or date.today()
+        as_of_date = as_of or beijing_today()
         config = get_config()
         refresh_enabled = bool(getattr(config, "portfolio_fx_update_enabled", True))
         if account_id is not None:
@@ -1052,7 +1053,7 @@ class PortfolioService:
         return position_rows, lot_rows, market_value_base, total_cost_base, fx_stale
 
     def _resolve_position_price(self, *, symbol: str, as_of_date: date) -> _ResolvedPositionPrice:
-        today = date.today()
+        today = beijing_today()
 
         close = self.repo.get_latest_close_with_date(symbol=symbol, as_of=as_of_date)
         if close is not None:

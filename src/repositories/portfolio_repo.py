@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date
+from src.time_utils import beijing_now_naive
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, select
@@ -113,7 +114,7 @@ class PortfolioRepository:
                 return None
             for key, value in fields.items():
                 setattr(row, key, value)
-            row.updated_at = datetime.now()
+            row.updated_at = beijing_now_naive()
             session.commit()
             session.refresh(row)
             return row
@@ -126,7 +127,7 @@ class PortfolioRepository:
             if row is None:
                 return False
             row.is_active = False
-            row.updated_at = datetime.now()
+            row.updated_at = beijing_now_naive()
             session.commit()
             return True
 
@@ -742,7 +743,7 @@ class PortfolioRepository:
                 existing.rate = rate
                 existing.source = source
                 existing.is_stale = is_stale
-                existing.updated_at = datetime.now()
+                existing.updated_at = beijing_now_naive()
             session.commit()
 
     def get_latest_fx_rate(
@@ -970,7 +971,7 @@ class PortfolioRepository:
                 existing.tax_total = tax_total
                 existing.fx_stale = fx_stale
                 existing.payload = payload
-                existing.updated_at = datetime.now()
+                existing.updated_at = beijing_now_naive()
             session.commit()
 
     def replace_positions_lots_and_snapshot(
@@ -1084,6 +1085,6 @@ class PortfolioRepository:
                 existing.tax_total = tax_total
                 existing.fx_stale = fx_stale
                 existing.payload = payload
-                existing.updated_at = datetime.now()
+                existing.updated_at = beijing_now_naive()
 
             session.commit()

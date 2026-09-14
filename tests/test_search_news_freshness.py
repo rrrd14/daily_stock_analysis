@@ -17,6 +17,7 @@ if "newspaper" not in sys.modules:
     sys.modules["newspaper"] = mock_np
 
 from src.search_service import SearchResponse, SearchResult, SearchService
+from src.time_utils import BEIJING, beijing_today
 
 
 def _result(title: str, published_date: str | None) -> SearchResult:
@@ -83,7 +84,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
 
     def test_search_stock_news_strict_filters(self) -> None:
         """Drop old/unknown/future+2, keep future+1 and within-window dates."""
-        today = datetime.now().date()
+        today = beijing_today()
         fresh = today.isoformat()
         old = (today - timedelta(days=30)).isoformat()
         future_1 = (today + timedelta(days=1)).isoformat()
@@ -124,7 +125,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
 
     def test_search_stock_news_try_next_provider_when_filtered_empty(self) -> None:
         """If provider-A passes API call but all results are filtered, continue to provider-B."""
-        today = datetime.now().date()
+        today = beijing_today()
         old = (today - timedelta(days=90)).isoformat()
         fresh = today.isoformat()
 
@@ -319,12 +320,12 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
 
     def test_search_comprehensive_intel_splits_strict_and_non_strict_filters(self) -> None:
         """Latest news stays strict while market analysis keeps undated results."""
-        today = datetime.now().date()
+        today = beijing_today()
         old = (today - timedelta(days=20)).isoformat()
         fresh = (today - timedelta(days=1)).isoformat()
         analysis_dt = datetime.now(timezone.utc).replace(microsecond=0)
         analysis_text = analysis_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        expected_analysis_date = analysis_dt.astimezone().date().isoformat()
+        expected_analysis_date = analysis_dt.astimezone(BEIJING).date().isoformat()
 
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=3,
@@ -359,7 +360,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         """ETF risk_check should avoid strict freshness filtering."""
         fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
         fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        expected_fresh_date = fresh_dt.astimezone().date().isoformat()
+        expected_fresh_date = fresh_dt.astimezone(BEIJING).date().isoformat()
 
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=3,
@@ -388,7 +389,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         """Non-ETF risk_check should keep strict freshness filtering."""
         fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
         fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        expected_fresh_date = fresh_dt.astimezone().date().isoformat()
+        expected_fresh_date = fresh_dt.astimezone(BEIJING).date().isoformat()
 
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=3,
@@ -511,7 +512,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         """Unix timestamp should be converted to local date before window filtering."""
         dt_utc = datetime(2026, 3, 15, 23, 30, tzinfo=timezone.utc)
         timestamp = str(int(dt_utc.timestamp()))
-        expected_local_date = dt_utc.astimezone().date()
+        expected_local_date = dt_utc.astimezone(BEIJING).date()
         parsed = SearchService._normalize_news_publish_date(timestamp)
         self.assertEqual(parsed, expected_local_date)
 
@@ -519,7 +520,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         """ISO datetime with timezone should be converted to local date."""
         dt_utc = datetime(2026, 3, 15, 23, 30, tzinfo=timezone.utc)
         iso_text = "2026-03-15T23:30:00Z"
-        expected_local_date = dt_utc.astimezone().date()
+        expected_local_date = dt_utc.astimezone(BEIJING).date()
         parsed = SearchService._normalize_news_publish_date(iso_text)
         self.assertEqual(parsed, expected_local_date)
 
@@ -527,7 +528,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         """RFC datetime with timezone should be converted to local date."""
         dt_utc = datetime(2026, 3, 15, 23, 30, tzinfo=timezone.utc)
         rfc_text = "Sun, 15 Mar 2026 23:30:00 +0000"
-        expected_local_date = dt_utc.astimezone().date()
+        expected_local_date = dt_utc.astimezone(BEIJING).date()
         parsed = SearchService._normalize_news_publish_date(rfc_text)
         self.assertEqual(parsed, expected_local_date)
 

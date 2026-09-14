@@ -65,6 +65,123 @@ def summarize_exception(exc: Exception) -> Tuple[str, str]:
     return error_type, " ".join(message.split())
 
 
+# ---------------------------------------------------------------------------
+# 来源失败分类
+# ---------------------------------------------------------------------------
+# 目的：把「超时 / 网络 / 鉴权 / 权限额度 / 不支持 / 无效载荷」与「确实取到了
+# 空数据」区分开，避免把一次超时当成“该标的没有历史”。类别用于 attempts 诊断，
+# 不改写原始异常信息，也不含任何密钥。
+FETCH_ERROR_CATEGORIES = (
+    "timeout",
+    "network",
+    "rate_limit",
+    "auth",
+    "permission",
+    "unsupported",
+    "invalid_payload",
+    "unknown",
+)
+
+_TIMEOUT_ERROR_NAMES = (
+    "Timeout",
+    "TimeoutError",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "TimeLimitExceeded",
+)
+_NETWORK_ERROR_NAMES = (
+    "ConnectionError",
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+    "RemoteDisconnected",
+    "SSLError",
+    "ProxyError",
+    "ChunkedEncodingError",
+    "IncompleteRead",
+    "NewConnectionError",
+    "MaxRetryError",
+    "ProtocolError",
+    "URLError",
+)
+_RATE_LIMIT_KEYWORDS = (
+    "rate limit",
+    "too many requests",
+    "429",
+    "quota",
+    "exceed",
+    "调用频率",
+    "访问频率",
+    "超过限制",
+    "积分不足",
+)
+_AUTH_KEYWORDS = (
+    "unauthorized",
+    "invalid api key",
+    "invalid token",
+    "authentication failed",
+    " 401",
+    " 403",
+    "forbidden",
+    "鉴权",
+    "密钥无效",
+    "token 无效",
+)
+_PERMISSION_KEYWORDS = (
+    "permission denied",
+    "not permitted",
+    "insufficient privilege",
+    "无权限",
+    "权限不足",
+)
+_UNSUPPORTED_KEYWORDS = (
+    "not supported",
+    "unsupported",
+    "not implemented",
+    "not available for",
+    "does not support",
+    "不支持",
+    "不提供",
+)
+_INVALID_PAYLOAD_KEYWORDS = (
+    "json",
+    "decode",
+    "malformed",
+    "unexpected token",
+    "invalid literal",
+    "missing column",
+    "keyerror",
+    "列不存在",
+    "字段缺失",
+)
+
+
+def classify_fetch_error(exc: Exception) -> str:
+    """把抓取异常归类为稳定类别（见 ``FETCH_ERROR_CATEGORIES``）。
+
+    仅做粗粒度归类，供 attempts 诊断与降级决策使用；原始类型与信息仍由
+    ``summarize_exception`` 提供，不在此处丢失。
+    """
+    root = unwrap_exception(exc)
+    name = type(root).__name__
+    text = f"{name} {exc} {root}".lower()
+
+    if any(key in name for key in _TIMEOUT_ERROR_NAMES) or "timed out" in text or "timeout" in text:
+        return "timeout"
+    if any(key in name for key in _NETWORK_ERROR_NAMES) or "connection" in text or "network" in text:
+        return "network"
+    if any(key in text for key in _RATE_LIMIT_KEYWORDS):
+        return "rate_limit"
+    if any(key in text for key in _AUTH_KEYWORDS):
+        return "auth"
+    if any(key in text for key in _PERMISSION_KEYWORDS):
+        return "permission"
+    if any(key in text for key in _UNSUPPORTED_KEYWORDS):
+        return "unsupported"
+    if any(key in text for key in _INVALID_PAYLOAD_KEYWORDS):
+        return "invalid_payload"
+    return "unknown"
+
+
 def normalize_stock_code(stock_code: str) -> str:
     """
     Normalize stock code by stripping exchange prefixes/suffixes.
@@ -450,8 +567,11 @@ class BaseFetcher(ABC):
         # 注意：此处的 volume_ratio 是“日线成交量 / 前5日均量(shift 1)”的相对倍数，
         # 与部分交易软件口径的“分时量比（同一时刻对比）”不同，含义更接近“放量倍数”。
         # 该行为目前保留（按需求不改逻辑）。
+        # 前5日窗口必须完整（rolling min_periods=5 保证缺一条即 NaN），
+        # 且分母为 0 时返回 NaN 而不是 inf，避免 JSON 输出 Infinity。
         avg_volume_5 = df['volume'].rolling(window=5).mean().shift(1)
         df['volume_ratio'] = df['volume'] / avg_volume_5.where(avg_volume_5 > 0)
+        df['volume_ratio'] = df['volume_ratio'].replace([np.inf, -np.inf], np.nan)
         if 'data_source' in df:
             for offset in range(1, 6):
                 df['volume_ratio'] = df['volume_ratio'].where(df['data_source'].eq(df['data_source'].shift(offset)))
@@ -1118,9 +1238,15 @@ class DataFetcherManager:
                 else:
                     attempts.append({"source": fetcher.name, "status": "empty", "records": 0})
             except Exception as e:
-                attempts.append({"source": fetcher.name, "status": "error", "error_type": type(e).__name__})
+                failure_reason = classify_fetch_error(e)
+                attempts.append({
+                    "source": fetcher.name,
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "reason": failure_reason,
+                })
                 error_type, error_reason = summarize_exception(e)
-                error_msg = f"[{fetcher.name}] ({error_type}) {error_reason}"
+                error_msg = f"[{fetcher.name}] ({error_type}/{failure_reason}) {error_reason}"
                 logger.warning(
                     f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                     f"error_type={error_type}, reason={error_reason}"
@@ -1379,7 +1505,10 @@ class DataFetcherManager:
                             break
                     
             except Exception as e:
-                error_msg = f"[{source}] 失败: {str(e)}"
+                failure_reason = classify_fetch_error(e)
+                # 分类以「追加」而非「插入」的方式呈现：既新增可诊断信息，
+                # 又保持既有日志子串 ("[source] 失败: <原因>") 不被破坏。
+                error_msg = f"[{source}] 失败: {str(e)}（分类: {failure_reason}）"
                 logger.info(f"[实时行情] {stock_code} {error_msg}，继续尝试下一个数据源")
                 errors.append(error_msg)
                 continue

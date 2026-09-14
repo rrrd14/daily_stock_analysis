@@ -85,7 +85,7 @@ def render(
     Returns:
         Rendered string, or None on error (caller should fallback).
     """
-    from datetime import datetime
+    from src.time_utils import beijing_now_naive
 
     try:
         from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -94,7 +94,7 @@ def render(
         return None
 
     if report_date is None:
-        report_date = datetime.now().strftime("%Y-%m-%d")
+        report_date = beijing_now_naive().strftime("%Y-%m-%d")
 
     templates_dir = _resolve_templates_dir()
     template_name = f"report_{platform}.j2"
@@ -132,7 +132,7 @@ def render(
     sell_count = sum(1 for r in results if getattr(r, "decision_type", "") == "sell")
     hold_count = sum(1 for r in results if getattr(r, "decision_type", "") in ("hold", ""))
 
-    report_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_timestamp = beijing_now_naive().strftime("%Y-%m-%d %H:%M:%S")
 
     def failed_checks(checklist: List[str]) -> List[str]:
         return [c for c in (checklist or []) if c.startswith("❌") or c.startswith("⚠️")]
