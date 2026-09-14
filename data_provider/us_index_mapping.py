@@ -93,10 +93,13 @@ def is_us_stock_code(code: str) -> bool:
         False
     """
 
-    if code.upper() in _US_STOCK_KNOWN_LIST:
+    normalized = (code or '').strip().upper()
+    if not normalized:
+        return False
+
+    if normalized in _US_STOCK_KNOWN_LIST:
         return True
 
-    normalized = (code or '').strip().upper()
     # 美股指数不是股票
     if normalized in US_INDEX_MAPPING:
         return False

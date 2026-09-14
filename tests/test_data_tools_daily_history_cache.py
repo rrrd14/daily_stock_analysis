@@ -169,8 +169,21 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
-        db.save_daily_data.assert_called_once_with(df, "600519", "Fetcher")
+        args, kwargs = manager.get_daily_data.call_args
+        self.assertEqual(args[0], "600519")
+        self.assertEqual(kwargs["days"], 60)
+        self.assertEqual(kwargs["end_date"], target.isoformat())
+        self.assertEqual(
+            kwargs["start_date"],
+            (target - timedelta(days=int(60 * 1.8) + 10)).isoformat(),
+        )
+        self.assertIsNone(kwargs["source"])
+        self.assertIsNone(kwargs["min_records"])
+        self.assertEqual(kwargs["diagnostics"], [])
+        manager.get_daily_data.assert_called_once()
+        db.save_daily_data.assert_called_once_with(unittest.mock.ANY, "600519", "Fetcher")
+        saved_df = db.save_daily_data.call_args.args[0]
+        pd.testing.assert_frame_equal(saved_df.reset_index(drop=True), df.reset_index(drop=True))
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 
@@ -207,7 +220,18 @@ class DailyHistoryCacheToolTest(unittest.TestCase):
              patch("src.services.history_loader._get_fetcher_manager", return_value=manager):
             result = self._run_with_frozen_date(target, "600519", days=60)
 
-        manager.get_daily_data.assert_called_once_with("600519", days=60)
+        args, kwargs = manager.get_daily_data.call_args
+        self.assertEqual(args[0], "600519")
+        self.assertEqual(kwargs["days"], 60)
+        self.assertEqual(kwargs["end_date"], target.isoformat())
+        self.assertEqual(
+            kwargs["start_date"],
+            (target - timedelta(days=int(60 * 1.8) + 10)).isoformat(),
+        )
+        self.assertIsNone(kwargs["source"])
+        self.assertIsNone(kwargs["min_records"])
+        self.assertEqual(kwargs["diagnostics"], [])
+        manager.get_daily_data.assert_called_once()
         self.assertFalse(result["cache_hit"])
         self.assertEqual(result["source"], "Fetcher")
 

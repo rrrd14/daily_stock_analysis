@@ -17,6 +17,7 @@ if "newspaper" not in sys.modules:
     sys.modules["newspaper"] = mock_np
 
 from src.search_service import SearchService, TavilySearchProvider
+from src.time_utils import BEIJING
 
 
 class _FakeTavilyClient:
@@ -125,7 +126,7 @@ class TestTavilySearchProvider(unittest.TestCase):
     def test_search_stock_news_keeps_tavily_results_with_supported_date_fields(self) -> None:
         published_dt = datetime.now(timezone.utc).replace(microsecond=0)
         published_text = published_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        expected_date = published_dt.astimezone().date().isoformat()
+        expected_date = published_dt.astimezone(BEIJING).date().isoformat()
 
         for field_name in ("published_date", "publishedDate"):
             with self.subTest(field_name=field_name):

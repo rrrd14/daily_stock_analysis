@@ -9,7 +9,7 @@
 2. 用于负载均衡器和监控系统
 """
 
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 
 from fastapi import APIRouter
 
@@ -30,5 +30,5 @@ async def health_check() -> HealthResponse:
     """
     return HealthResponse(
         status="ok",
-        timestamp=datetime.now().isoformat()
+        timestamp=beijing_now_naive().isoformat()
     )

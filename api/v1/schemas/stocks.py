@@ -9,14 +9,14 @@
 2. 定义历史 K 线数据模型
 """
 
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 from pydantic import BaseModel, Field
 
 
 class StockQuote(BaseModel):
     """股票实时行情"""
-    
+
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     current_price: float = Field(..., description="当前价格")
@@ -26,10 +26,44 @@ class StockQuote(BaseModel):
     high: Optional[float] = Field(None, description="最高价")
     low: Optional[float] = Field(None, description="最低价")
     prev_close: Optional[float] = Field(None, description="昨收价")
-    volume: Optional[float] = Field(None, description="成交量（股）")
+    volume: Optional[float] = Field(None, description="成交量（单位见 volume_unit）")
     amount: Optional[float] = Field(None, description="成交额（元）")
-    update_time: Optional[str] = Field(None, description="更新时间")
-    
+    # 兼容字段：明确语义为「本次抓取时间」，不再代表行情发生时间。
+    update_time: Optional[str] = Field(
+        None, description="本次抓取时间（北京时间，含 +08:00 偏移）；兼容字段，等价于 fetched_at"
+    )
+
+    # === 行情证据（追加字段，旧客户端可忽略；未提供时为 null）===
+    quote_time: Optional[str] = Field(
+        None, description="行情发生/发布时刻（来源提供，北京时间 +08:00）；来源未提供时为 null"
+    )
+    fetched_at: Optional[str] = Field(
+        None, description="本次成功收到该行情的时刻（北京时间 +08:00）"
+    )
+    served_at: Optional[str] = Field(
+        None, description="本次 API 返回时刻（北京时间 +08:00）；仅表示服务时间，不能用于判断行情新鲜度"
+    )
+    session_date: Optional[str] = Field(
+        None, description="所属交易所的交易日（按市场时区；美股可能为北京时间前一日）"
+    )
+    source: Optional[str] = Field(None, description="行情数据来源标识")
+    freshness: Optional[str] = Field(
+        None, description="时效：recent / stale / unknown / future_timestamp"
+    )
+    age_seconds: Optional[float] = Field(
+        None, description="行情时间距抓取时刻的秒数；来源未提供行情时间时为 null"
+    )
+    volume_unit: Optional[str] = Field(
+        None, description="成交量单位：shares / lots / unknown（unknown 时不应据此比较绝对量）"
+    )
+    field_sources: Optional[Dict[str, Any]] = Field(
+        None, description="逐字段来源与时间，用于识别第二来源补充字段（如 PE 与价格不同时间）"
+    )
+    is_realtime: Optional[bool] = Field(
+        None, description="是否可视为当前实时行情（freshness == 'recent'）"
+    )
+    freshness_note: Optional[str] = Field(None, description="时效语义说明")
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -44,7 +78,24 @@ class StockQuote(BaseModel):
                 "prev_close": 1785.00,
                 "volume": 10000000,
                 "amount": 18000000000,
-                "update_time": "2024-01-01T15:00:00"
+                "update_time": "2026-09-14T09:53:34+08:00",
+                "quote_time": "2026-09-14T09:35:00+08:00",
+                "fetched_at": "2026-09-14T09:53:34+08:00",
+                "served_at": "2026-09-14T09:53:35+08:00",
+                "session_date": "2026-09-14",
+                "source": "tencent",
+                "freshness": "recent",
+                "age_seconds": 1114.0,
+                "volume_unit": "shares",
+                "field_sources": {
+                    "price": {
+                        "source": "tencent",
+                        "quote_time": "2026-09-14T09:35:00+08:00",
+                        "fetched_at": "2026-09-14T09:53:34+08:00",
+                    }
+                },
+                "is_realtime": True,
+                "freshness_note": "recent仅表示源时间戳在5分钟内；抓取时间不等于行情时间。",
             }
         }
 

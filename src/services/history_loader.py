@@ -171,22 +171,42 @@ def load_history_df(
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, e)
 
     # --- 2. Network fallback via singleton DataFetcherManager -------------
+    # 所有路径（短/长窗口、自动/指定来源）共用同一 resolved 日期边界：
+    #   - 目标日之后的数据一律不得返回（由 manager 入参 + 返回后裁剪双重保证）
+    #   - 显式 source 只改变来源选择，不改变截止日期语义
+    # min_records 仅在长窗口或显式来源时要求，避免短窗口把「返回不足」误判为失败。
     diagnostics = []
     try:
         manager = _get_fetcher_manager()
-        if days > 365 or source:
-            df, source = manager.get_daily_data(
-                stock_code, days=days, start_date=start.isoformat(), end_date=end.isoformat(),
-                source=source, min_records=days, diagnostics=diagnostics,
+        df, source = manager.get_daily_data(
+            stock_code,
+            days=days,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            source=source,
+            min_records=days if (days > 365 or source) else None,
+            diagnostics=diagnostics,
+        )
+        if df is not None and not df.empty and "date" in df.columns:
+            dates = pd.to_datetime(df["date"], errors="coerce")
+            # 强制裁剪到 resolved 区间：不返回目标日之后的行情。
+            # 仅用解析结果做过滤，不回写 date 列，避免改变调用方依赖的原始类型
+            # （例如 datetime.date 会被 pd.to_datetime 变成 Timestamp）。
+            in_range = (
+                dates.notna()
+                & (dates >= pd.Timestamp(start))
+                & (dates <= pd.Timestamp(end))
             )
-            if df is not None and not df.empty and "date" in df.columns:
-                dates = pd.to_datetime(df["date"], errors="coerce").dt.date
-                df = df.loc[(dates >= start) & (dates <= end)].sort_values("date")
-        else:
-            df, source = manager.get_daily_data(stock_code, days=days)
+            df = df.loc[in_range]
+            df = df.sort_values("date").drop_duplicates("date", keep="last")
         if df is not None and not df.empty:
             df.attrs["source_attempts"] = diagnostics
             return df, source
+        # 取到数据但全部落在目标区间之外时，不返回越界行情
+        if df is not None:
+            empty = pd.DataFrame()
+            empty.attrs["source_attempts"] = diagnostics
+            return empty, "none"
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)
 

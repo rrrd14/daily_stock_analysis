@@ -11,7 +11,7 @@
 """
 
 import logging
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 from typing import Optional
 
 from src.config import get_config
@@ -118,7 +118,7 @@ def run_market_review(
         
         if review_report:
             # 保存报告到文件
-            date_str = datetime.now().strftime('%Y%m%d')
+            date_str = beijing_now_naive().strftime('%Y%m%d')
             report_filename = f"market_review_{date_str}.md"
             filepath = notifier.save_report_to_file(
                 f"{review_text['root_title']}\n\n{review_report}",

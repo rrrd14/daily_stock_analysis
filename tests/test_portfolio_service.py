@@ -21,6 +21,7 @@ from sqlalchemy import select
 from src.config import Config
 from src.repositories.portfolio_repo import PortfolioBusyError, PortfolioRepository
 from src.services.portfolio_service import _AvgState, PortfolioConflictError, PortfolioOversellError, PortfolioService
+from src.time_utils import beijing_today
 from src.storage import DatabaseManager, PortfolioDailySnapshot, PortfolioPosition, PortfolioPositionLot, PortfolioTrade
 
 
@@ -111,7 +112,7 @@ class PortfolioServiceTestCase(unittest.TestCase):
         return aid
 
     def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
-        today = date.today()
+        today = beijing_today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]
         self.service.record_trade(
@@ -137,7 +138,7 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertTrue(pos["price_available"])
 
     def test_current_snapshot_uses_close_before_realtime_fallback(self) -> None:
-        today = date.today()
+        today = beijing_today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]
         self.service.record_trade(

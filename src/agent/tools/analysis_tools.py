@@ -7,11 +7,27 @@ Tools:
 """
 
 import logging
+import math
 from typing import Optional
 
 from src.agent.tools.registry import ToolParameter, ToolDefinition
 
 logger = logging.getLogger(__name__)
+
+
+def _finite(value):
+    """返回有限浮点数，否则 None（避免 JSON 中出现 NaN / Infinity）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _r(value, digits: int):
+    """有限值才舍入，仅在展示层做舍入。"""
+    number = _finite(value)
+    return round(number, digits) if number is not None else None
 
 
 def _fetch_trend_data(stock_code: str):
@@ -47,36 +63,41 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "code": result.code,
         "trend_status": result.trend_status.value,
         "ma_alignment": result.ma_alignment,
-        "trend_strength": result.trend_strength,
-        "ma5": result.ma5,
-        "ma10": result.ma10,
-        "ma20": result.ma20,
-        "ma60": result.ma60,
-        "current_price": result.current_price,
-        "bias_ma5": round(result.bias_ma5, 2),
-        "bias_ma10": round(result.bias_ma10, 2),
-        "bias_ma20": round(result.bias_ma20, 2),
+        "trend_strength": _finite(result.trend_strength),
+        "ma5": _finite(result.ma5),
+        "ma10": _finite(result.ma10),
+        "ma20": _finite(result.ma20),
+        "ma60": _finite(result.ma60),
+        "current_price": _finite(result.current_price),
+        "bias_ma5": _r(result.bias_ma5, 2),
+        "bias_ma10": _r(result.bias_ma10, 2),
+        "bias_ma20": _r(result.bias_ma20, 2),
         "volume_status": result.volume_status.value,
-        "volume_ratio_5d": round(result.volume_ratio_5d, 2) if result.volume_ratio_5d is not None else None,
+        "volume_ratio_5d": _r(result.volume_ratio_5d, 2),
         "volume_trend": result.volume_trend,
         "support_ma5": result.support_ma5,
         "support_ma10": result.support_ma10,
         "resistance_levels": result.resistance_levels,
         "support_levels": result.support_levels,
-        "macd_dif": round(result.macd_dif, 4) if result.macd_dif is not None else None,
-        "macd_dea": round(result.macd_dea, 4) if result.macd_dea is not None else None,
-        "macd_bar": round(result.macd_bar, 4) if result.macd_bar is not None else None,
+        "macd_dif": _r(result.macd_dif, 4),
+        "macd_dea": _r(result.macd_dea, 4),
+        "macd_bar": _r(result.macd_bar, 4),
         "macd_status": result.macd_status.value,
         "macd_signal": result.macd_signal,
-        "rsi_6": round(result.rsi_6, 2) if result.rsi_6 is not None else None,
-        "rsi_12": round(result.rsi_12, 2) if result.rsi_12 is not None else None,
-        "rsi_24": round(result.rsi_24, 2) if result.rsi_24 is not None else None,
+        "rsi_6": _r(result.rsi_6, 2),
+        "rsi_12": _r(result.rsi_12, 2),
+        "rsi_24": _r(result.rsi_24, 2),
         "rsi_status": result.rsi_status.value,
         "rsi_signal": result.rsi_signal,
         "buy_signal": result.buy_signal.value,
         "signal_score": result.signal_score,
         "signal_reasons": result.signal_reasons,
         "risk_factors": result.risk_factors,
+        # 显式信号资格：数据不完整时 actionable=False，buy_signal 不构成可执行建议
+        "signal_status": result.signal_status.value,
+        "actionable": result.actionable,
+        "score_status": result.score_status,
+        "indicator_quality": dict(result.indicator_quality),
     }
 
 

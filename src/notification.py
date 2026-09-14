@@ -17,7 +17,7 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from src.time_utils import beijing_now_naive
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
@@ -564,7 +564,7 @@ class NotificationService(
             Markdown 格式的日报内容
         """
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = beijing_now_naive().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
@@ -573,7 +573,7 @@ class NotificationService(
             f"# 📅 {report_date} {labels['report_title']}",
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
-            f"{labels['generated_at_label']}：{datetime.now().strftime('%H:%M:%S')}",
+            f"{labels['generated_at_label']}：{beijing_now_naive().strftime('%H:%M:%S')}",
             "",
             "---",
             "",
@@ -755,7 +755,7 @@ class NotificationService(
         # 底部信息（去除免责声明）
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}：{beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         
         return "\n".join(report_lines)
@@ -834,7 +834,7 @@ class NotificationService(
                 return out
 
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = beijing_now_naive().strftime('%Y-%m-%d')
 
         # 按评分排序（高分在前）
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
@@ -1087,7 +1087,7 @@ class NotificationService(
         # 底部（去除免责声明）
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}：{beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         
         return "\n".join(report_lines)
@@ -1112,14 +1112,14 @@ class NotificationService(
             out = render(
                 platform='wechat',
                 results=results,
-                report_date=datetime.now().strftime('%Y-%m-%d'),
+                report_date=beijing_now_naive().strftime('%Y-%m-%d'),
                 summary_only=self._report_summary_only,
                 extra_context={"report_language": report_language},
             )
             if out:
                 return out
 
-        report_date = datetime.now().strftime('%Y-%m-%d')
+        report_date = beijing_now_naive().strftime('%Y-%m-%d')
         
         # 按评分排序
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
@@ -1248,7 +1248,7 @@ class NotificationService(
                 lines.append("")
         
         # 底部
-        lines.append(f"*{labels['report_time_label']}: {datetime.now().strftime('%H:%M')}*")
+        lines.append(f"*{labels['report_time_label']}: {beijing_now_naive().strftime('%H:%M')}*")
         models = self._collect_models_used(results)
         if models:
             lines.append(f"*{labels['analysis_model_label']}: {', '.join(models)}*")
@@ -1267,7 +1267,7 @@ class NotificationService(
         Returns:
             精简版 Markdown 内容
         """
-        report_date = datetime.now().strftime('%Y-%m-%d')
+        report_date = beijing_now_naive().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
@@ -1348,7 +1348,7 @@ class NotificationService(
             Brief markdown content.
         """
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = beijing_now_naive().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
         config = get_config()
@@ -1388,7 +1388,7 @@ class NotificationService(
                 f"{labels['score_label']} {r.sentiment_score} | {one}"
             )
         lines.append("")
-        lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        lines.append(f"*{beijing_now_naive().strftime('%Y-%m-%d %H:%M:%S')}*")
         return "\n".join(lines)
 
     def generate_single_stock_report(self, result: AnalysisResult) -> str:
@@ -1403,7 +1403,7 @@ class NotificationService(
         Returns:
             Markdown 格式的单股报告
         """
-        report_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+        report_date = beijing_now_naive().strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
         signal_text, signal_emoji, _ = self._get_signal_level(result)
@@ -1737,7 +1737,7 @@ class NotificationService(
         from pathlib import Path
         
         if filename is None:
-            date_str = datetime.now().strftime('%Y%m%d')
+            date_str = beijing_now_naive().strftime('%Y%m%d')
             filename = f"report_{date_str}.md"
         
         # 确保 reports 目录存在（使用项目根目录下的 reports）
