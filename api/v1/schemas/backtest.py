@@ -44,8 +44,8 @@ class BacktestRunRecord(BaseModel):
     )
     engine_kind: Optional[str] = Field(
         None,
-        description="引擎类型；当前只实现 ai_report_evaluation（报告事后评估），"
-                    "传入其它名称会被拒绝",
+        description="引擎类型：ai_report_evaluation（报告事后评估）或 "
+                    "daily_return（从冻结快照计算日频回报率）；未注册名称会被拒绝",
     )
     engine_version: Optional[str] = Field(None, description="引擎版本")
 

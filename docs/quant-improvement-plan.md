@@ -24,7 +24,7 @@ Docker 恢复后的补充证据见[环境与测试记录](testing-environment-an
 | 指标 None 与 NaN 防御 | 已改善，评分仍存在严重缺口 | 有效性先于计算/打分；保留风险 |
 | 不可变运行证据 | 报告评估阶段已实现 | 增加数据质量等级、快照身份与重放验证 |
 | Docker E2E | 脚本与 CI 配置已新增 | Linux UID 权限、同一镜像验证、构建上下文 |
-| 连续账户回测 | 未实现 | 等数据与时间验收完成后开始 |
+| 连续账户回测 | 未实现（已落地回报率引擎 `daily_return`，仅算日频回报率） | 账户/持仓/成本/费用建模 |
 | 自然语言创建策略实验 | 未实现 | 后续使用结构化实验参数，不执行模型任意代码 |
 | 每日模拟跟踪与可用性历史 | 未形成量化闭环 | 复用调度器，记录运行状态和幂等结果 |
 
@@ -82,7 +82,7 @@ Docker 恢复后的补充证据见[环境与测试记录](testing-environment-an
 
 ### WP4：日线快照与数据质量门槛（R7）
 
-状态：**第一阶段 + 运行引用已实现**（2026-09-14）：新增不可变快照表 `market_data_snapshots` 与仓储 `src/repositories/market_snapshot_repo.py`（只增不改、身份 = 口径 + 区间 + 内容哈希、稳定序列化哈希），质量门槛 `assess_data_quality`（`verified`/`partial`/`unknown`）与策略前置校验 `ensure_input_eligible`，覆盖判定 `compute_coverage`（只依据真实数据首尾，不补齐）。`backtest_runs` 追加 `snapshot_id`/`data_quality_status`/`input_eligibility`/`engine_kind`/`engine_version`；`run_backtest()` 支持可选 `snapshot_id` 与 `engine_kind`：报告评估保持原语义并如实记录快照质量，**其它策略引擎必须引用合格快照，否则入口拒绝**。只读查询已补齐：`GET /api/v1/backtest/snapshots` 与 `/{snapshot_id}`（`include_bars` 可选）+ Agent 工具 `get_market_snapshot`；单份 payload 超 5 MiB 拒绝写入，`storage_stats()` 提供体积概览。回归 `tests/test_market_snapshot_freeze.py`（14）+ `tests/test_backtest_snapshot_link.py`（7）+ `tests/test_market_snapshot_api.py`（8），容器探针 28 项三时区全 PASS。**已补齐**：前端回测运行卡片展示快照引用（质量等级、输入资格、引擎类型/版本 + 按需读取快照元数据核对来源/复权/币种/单位/冻结区间，含 5 项 Web 回归）；按交易日历推断预期 session 数（`trading_calendar.count_sessions()` + `compute_coverage(expected_sessions=...)`，日历不可用时明示 `coverage.basis=endpoints_only` 而非伪装完整）；快照导出工具 `scripts/export_market_snapshots.py`（只读、逐份哈希核对、退出码语义）。**2026-09-14 复核后修订（R1–R5）**：① 冻结前逐行校验 OHLCV/有限值/日期唯一与价格关系，坏行与重复行不计入覆盖（覆盖改用**有效唯一交易日集合**）；② `required_rows` 与 `SNAPSHOT_QC_VERSION` 进快照身份，提高数据要求会得到新快照并经重新评估；③ 未实现的 `engine_kind` 一律拒绝（不再复用旧报告引擎），证据中 `snapshot.consumed=false`；④ `docker_e2e.sh` 提交可执行位并有回归锁定；⑤ 导出 CLI 可独立运行并强制 UTF-8 输出。**仍未实现**：按「上市信息」收紧预期区间（仓库当前无运行时上市日期源，仍以首尾判定兜底，故不会因缺上市数据放宽）；真正的 `portfolio_daily` 引擎（第二阶段：需按引擎注册表分派、从冻结 bars 计算并校验标的/区间，当前只有报告评估）。以下为原始交付清单。
+状态：**第一阶段 + 运行引用已实现**（2026-09-14）：新增不可变快照表 `market_data_snapshots` 与仓储 `src/repositories/market_snapshot_repo.py`（只增不改、身份 = 口径 + 区间 + 内容哈希、稳定序列化哈希），质量门槛 `assess_data_quality`（`verified`/`partial`/`unknown`）与策略前置校验 `ensure_input_eligible`，覆盖判定 `compute_coverage`（只依据真实数据首尾，不补齐）。`backtest_runs` 追加 `snapshot_id`/`data_quality_status`/`input_eligibility`/`engine_kind`/`engine_version`；`run_backtest()` 支持可选 `snapshot_id` 与 `engine_kind`：报告评估保持原语义并如实记录快照质量，**其它策略引擎必须引用合格快照，否则入口拒绝**。只读查询已补齐：`GET /api/v1/backtest/snapshots` 与 `/{snapshot_id}`（`include_bars` 可选）+ Agent 工具 `get_market_snapshot`；单份 payload 超 5 MiB 拒绝写入，`storage_stats()` 提供体积概览。回归 `tests/test_market_snapshot_freeze.py`（14）+ `tests/test_backtest_snapshot_link.py`（7）+ `tests/test_market_snapshot_api.py`（8），容器探针 28 项三时区全 PASS。**已补齐**：前端回测运行卡片展示快照引用（质量等级、输入资格、引擎类型/版本 + 按需读取快照元数据核对来源/复权/币种/单位/冻结区间，含 5 项 Web 回归）；按交易日历推断预期 session 数（`trading_calendar.count_sessions()` + `compute_coverage(expected_sessions=...)`，日历不可用时明示 `coverage.basis=endpoints_only` 而非伪装完整）；快照导出工具 `scripts/export_market_snapshots.py`（只读、逐份哈希核对、退出码语义）。**2026-09-14 复核后修订（R1–R5）**：① 冻结前逐行校验 OHLCV/有限值/日期唯一与价格关系，坏行与重复行不计入覆盖（覆盖改用**有效唯一交易日集合**）；② `required_rows` 与 `SNAPSHOT_QC_VERSION` 进快照身份，提高数据要求会得到新快照并经重新评估；③ 未实现的 `engine_kind` 一律拒绝（不再复用旧报告引擎），证据中 `snapshot.consumed=false`；④ `docker_e2e.sh` 提交可执行位并有回归锁定；⑤ 导出 CLI 可独立运行并强制 UTF-8 输出。**仍未实现**：按「上市信息」收紧预期区间（仓库当前无运行时上市日期源，仍以首尾判定兜底，故不会因缺上市数据放宽）。**已实现（第二阶段）**：回报率引擎 `daily_return`——按引擎注册表分派、从冻结 bars 计算日频简单收益率、总回报率与年化回报率（几何、252 交易日/年）并校验标的/区间、记录 `consumed=true`（见 `tests/test_daily_return_engine.py`）；不建模资金/费用/滑点/持仓，也不做组合账户回测。以下为原始交付清单。
 
 改动边界：优先复用历史加载器和 backtest_runs；新增小型快照元数据/仓储，不平行重写行情采集框架。
 
@@ -122,9 +122,9 @@ Docker 恢复后的补充证据见[环境与测试记录](testing-environment-an
 
 真实网络不可用时可继续做确定性开发和评审，但不能签署“目标服务器每天行情已验证”的验收。
 
-## 5. 第二阶段：一个确定性、连续账户的日频回测
+## 5. 第二阶段：日频回测（先算回报率，账户/组合后续）
 
-入口复用 Web 回测页、API 服务层和运行记录。新增 engine_kind=portfolio_daily，保留 ai_report_evaluation 的原语义，不把两个结果混在同一汇总里。
+入口复用 Web 回测页、API 服务层和运行记录。已落地 `engine_kind=daily_return`（回报率引擎：从冻结快照计算日频简单收益率与总回报率，不建模资金/费用/持仓，见 `tests/test_daily_return_engine.py`）；完整的连续账户日频回测（含资金/费用/滑点/持仓）仍待实现，届时再新增 engine_kind，保留 `ai_report_evaluation` 的原语义，不把多个结果混在同一汇总里。
 
 最小实验规格：固定标的池、固定起止日期、初始资金、策略ID/版本、参数、冻结快照ID、费用模型版本、滑点模型版本、市场规则版本、基准与再平衡频率。首个策略选择可以验证交易链路的简单确定性规则；选定后必须固化，避免根据已看到的收益反复改口径。
 

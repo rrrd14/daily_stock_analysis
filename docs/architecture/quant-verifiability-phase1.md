@@ -42,7 +42,7 @@
 
 质量等级由 `assess_data_quality()` 判定：来源或复权未知 → `unknown`（不可用于任何收益口径计算）；行情行存在上述缺陷 → 同样 `unknown`（价格都不可用，不能只降级为「可研究」）；仅币种/单位未知或覆盖不足 → `partial`；全部已知、覆盖完整且行情无缺陷 → `verified`。
 
-只实现报告事后评估引擎（`ai_report_evaluation`）。传入其它 `engine_kind` 会在入口直接抛错，不再「换个标签继续跑旧报告引擎」——旧引擎并不消费冻结行情，把运行结果标成组合/策略引擎会让记录与真实计算不符。报告评估仍可附加 `snapshot_id` 作为**引用**（核对当时口径与质量），但证据里写明 `snapshot.consumed=false` 并在 `limitations` 中说明：引用不等于消费。真正支持组合引擎时需按引擎注册表分派、从冻结 bars 计算、校验标的与区间口径。
+内置报告事后评估（`ai_report_evaluation`）+ 注册表里的策略引擎（见 `src/services/backtest_engine_registry.py`）通过 `engine_kind` 分派，未注册的 `engine_kind` 在入口直接抛错，不再「换个标签继续跑旧报告引擎」。报告评估仍可附加 `snapshot_id` 作为**引用**（核对当时口径与质量），但证据里写明 `snapshot.consumed=false` 并在 `limitations` 中说明：引用不等于消费。回报率引擎（`daily_return`）**必须**引用 `input_eligibility=true` 且标的与请求 `code` 一致的快照，然后从冻结 bars 计算日频简单收益率序列、总回报率与年化回报率（几何、按 252 交易日/年），证据里 `snapshot.consumed=true`、`bars_consumed` 与 `metrics` 可核对，并如实声明「不建模资金/费用/滑点/持仓」——这是「算回报率」的引擎，不是组合 / 账户回测，也不产出可交易净值曲线。
 
 覆盖判定分两层，`quality.coverage.basis` 写明实际用了哪层：
 

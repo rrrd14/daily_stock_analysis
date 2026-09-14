@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """WP4 收尾回归：backtest_runs 引用冻结快照，并按引擎类型强制资格门槛。
 
-规则（见 docs/quant-improvement-plan.md WP4 与设计 §8，R3 修订）：
+规则（见 docs/quant-improvement-plan.md WP4 与设计 §8，第二阶段修订）：
 
-- 只实现报告事后评估（`ai_report_evaluation`）；其它 `engine_kind` 一律被拒绝，
-  因为旧引擎并不消费冻结行情，换个标签会让运行记录与真实计算不符。
-- 报告评估可以附加 `snapshot_id` 作为**引用**（核对当时口径与质量），但证据里
+- 内置报告事后评估（`ai_report_evaluation`）+ 注册表里的策略引擎（`daily_return`）；
+  未注册的 `engine_kind` 一律被拒绝。
+- 报告评估可以附加 `snapshot_id` 作为**引用**（核对当时口径与质量），证据里
   写明 `consumed=false`：引用不等于消费。
+- 策略引擎必须引用 `input_eligibility=true` 且标的与 `code` 一致的快照，并从
+  冻结 bars 计算，证据里 `consumed=true`（见 `test_daily_return_engine.py`）。
 - 未知名/不存在的快照一律拒绝。
 """
 
@@ -56,25 +58,25 @@ class BacktestSnapshotLinkTestCase(unittest.TestCase):
         return self.service.run_backtest(**params)
 
     # ------------------------------------------------------------------
-    # 未实现引擎一律拒绝（不再允许「换个标签跑旧引擎」）
+    # 未注册引擎一律拒绝（不再允许「换个标签跑旧引擎」）
     # ------------------------------------------------------------------
     def test_unimplemented_engine_kind_is_rejected_without_snapshot(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            self._run(engine_kind="portfolio_daily")
+            self._run(engine_kind="factor_momentum")
         self.assertIn("is not implemented", str(ctx.exception))
-        self.assertIn("portfolio_daily", str(ctx.exception))
+        self.assertIn("factor_momentum", str(ctx.exception))
 
     def test_unimplemented_engine_kind_is_rejected_even_with_eligible_snapshot(self) -> None:
         created = self._snapshot()
         self.assertTrue(created["input_eligibility"])
 
         with self.assertRaises(ValueError) as ctx:
-            self._run(engine_kind="portfolio_daily", snapshot_id=created["snapshot_id"])
+            self._run(engine_kind="factor_momentum", snapshot_id=created["snapshot_id"])
         self.assertIn("is not implemented", str(ctx.exception))
 
     def test_rejected_engine_kind_does_not_write_a_run_record(self) -> None:
         with self.assertRaises(ValueError):
-            self._run(engine_kind="portfolio_daily")
+            self._run(engine_kind="factor_momentum")
 
         self.assertEqual(self.service.get_runs(), [])
 
