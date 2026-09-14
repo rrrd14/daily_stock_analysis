@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 新增本地环境与 Docker 实测记录，列出依赖准备、Web/回测证据/三时区验证、UID 权限负例、在线行情返回及未验证边界。
+
+- [文档] 基于当前提交与工作区重新审查量化前置能力，新增修订改进计划与数据/北京时间契约设计，明确阶段1.1待办，并更正“全链路时区已统一”的过度表述；计划中的修复尚未实现。
+
 - [修复] Agent 历史行情支持显式指定数据源并绕过缓存；长窗口按去重后的实际条数继续降级，返回各来源尝试状态，避免将某一来源的短历史误判为标的历史不存在。
 
 - [新功能] 回测执行保存独立运行编号、实际参数、行情快照、结果与 SHA256；Web 和聊天可查询程序证据，明确空记录、数据不足和失败状态以及报告评估的适用边界。
@@ -38,6 +42,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 技术分析量能判断补充最新成交量 NaN 校验，避免实时合成行成交量缺失时 `volume_ratio_5d` 变为 NaN 并被误判为「量能正常」。
 - [修复] 实时行情合成虚拟当日 K 线时，缺失的 `pct_chg` 保持 NaN 而非默认 0，避免下游将「无数据」误读为「零涨跌」。
 - [修复] 技术分析 MACD/RSI 计算补充 NaN 防御，数据存在缺失值时显式标记为无效并计入风险因素，避免静默落入中性/超卖分支产生错误信号。
+- [测试] 新增 Docker E2E 冒烟测试 `scripts/docker_e2e.sh`，在真实镜像中验证构建、启动、健康检查、关键只读接口、前端静态资源、非 root 用户与数据目录可写，并接入 CI `docker-e2e` 作业。
+- [修复] 统一应用时钟为北京时间（`Asia/Shanghai`），不再随宿主机时区变化：新增 `src/time_utils.py`，数据库时间戳、日志文件名与时间戳、调度器 `SCHEDULE_TIME`、主入口与大盘复盘时间均改用北京时间；调度依赖新增 `pytz`。
+- [改进] 实时行情新增来源与时效元信息（`quote_time`、`fetched_at`、`volume_unit`、`field_sources`、`freshness`），时效未知或过期时不再被表述为「当前实时」；成交量单位未知或来源不一致时不合成成交量。
+- [新功能] Agent 新增 `get_current_time` 只读工具，并在系统提示中注入 `[PROGRAM_CLOCK]` 北京时间上下文，避免模型从旧对话推断当前日期。
+- [改进] 技术指标在数据不足时返回 `null` 而非 `0`（MA60/MACD/RSI/量比），并在风险因素中记录缺口；RSI 仅在真实横盘时给出中性 50。
+- [修复] `is_us_stock_code` 对 `None`/空字符串先归一化再判断，避免 `None.upper()` 抛 `AttributeError`。
+- [测试] 修复 Windows 本地环境下 5 个测试的隔离与编码问题：`test_config_env_compat` 屏蔽磁盘 `.env` 干扰、`test_market_analyzer_generate_text` 静态检查显式使用 UTF-8、`test_pipeline_realtime_indicators` 实时行情补充 `quote_time` 以通过时效校验、`test_storage` 先释放 SQLite 连接再清理临时目录。
+- [修复] 技术分析评分引入显式指标有效性（`valid`/`insufficient`/`invalid`）：缺失或存在缺口的均线/量能/MACD/RSI 不再按默认枚举加分，新增 `signal_status`、`actionable`、`score_status`、`indicator_quality`；指标不足时不再输出「买入/强烈买入」，上游写入的风险因素不再被评分分支清空。
+- [修复] 统一指标输入窗口规则：前5个交易日成交量缺一条即判定不足（不再用 `skipna` 以4条求均值）、RSI 差分保留 NaN 缺口而非按零涨跌处理、MACD 拒绝跨缺口认证有效；量能分母为0时返回 NaN 而非 Infinity。
+- [测试] 新增 `tests/test_stock_analyzer_indicator_validity.py` 回归：覆盖缺失指标不再产生强烈买入、分析器与基础指标入口窗口一致性、价格缺口失效判定、完整行情评分不漂移以及 JSON 有限性。
+- [修复] 历史行情加载器所有路径共用同一 resolved 日期边界：短窗口与长窗口、自动与显式来源均传入并强制裁剪起止日期，显式 `target_date` 下不再返回目标日之后的行情（修复未来数据泄漏）。
+- [修复] 继续迁移业务时钟到北京时间：任务队列与任务服务起止时间、报告渲染时间戳、历史报告日期与时长、持仓 `as_of` 与持仓更新时间、新闻发布时间归一化与时效窗口、通知与邮件/推送报告时间、API 时间戳、大盘复盘输出文件名、Bot 状态时间统一改用 `src/time_utils`；交易所 session 计算、耗时 `monotonic` 与第三方平台签名时间戳保持原语义不变。
+- [测试] 同步受北京时间业务时钟影响的新闻时效、Tavily 日期归一化与持仓用例，并新增历史截止日期回归（请求 2024 截止不得返回 2026 行情）。
+- [修复] Web 行情接口补齐来源与时效证据：`GET /api/v1/stocks/{code}/quote` 追加 `quote_time`、`fetched_at`、`served_at`、`session_date`、`source`、`freshness`、`age_seconds`、`volume_unit`、`field_sources`、`is_realtime`、`freshness_note`；`update_time` 语义明确为「本次抓取时间」（北京时间，含 +08:00），过期或未知行情不再被误标为当前实时。
+- [修复] 行情 `session_date` 按交易所时区计算（美股收盘落在北京时间次日时仍记为美股交易日），第二来源补充字段（如 PE）保留各自行情时间，不再继承主来源价格的时间。
+- [测试] 新增 `tests/test_stock_quote_evidence.py` 回归：覆盖 stale 报价保留源时间与时效、`update_time` 等价抓取时间且带偏移、未知时间不标实时、美股 `session_date` 跨时区、第二来源字段时间独立、schema 声明并保留证据字段（防 `response_model` 静默剥离）与旧载荷兼容。
+- [修复] Docker E2E 冒烟测试改用 Docker 命名卷承载 `data/logs/reports`，并在启动前以 root 显式把属主初始化为容器运行时用户 `1000:1000`，可写校验扩展为三个目录；修复 Linux runner 上调用者 UID 与镜像内 UID 不匹配导致数据目录不可写的问题，同时不再向宿主机写临时目录。
+- [改进] 数据源失败改为稳定分类（`timeout`/`network`/`rate_limit`/`auth`/`permission`/`unsupported`/`invalid_payload`/`unknown`）：`get_daily_data` 的 attempts 增加 `reason` 字段，实时行情失败日志附带类别；一次超时或鉴权失败不再与「确实没有历史/空数据」混为一谈。类别为固定枚举，不携带原始异常文本，避免泄漏密钥；实时行情日志以**追加**形式呈现分类（`[source] 失败: <原因>（分类: timeout）`），保留既有日志子串以免破坏日志消费方与既有断言。
+- [测试] 新增 `tests/test_fetch_error_classification.py`：覆盖 8 类失败映射、超时不被当作无历史（抛错且 attempts 可分辨）、不支持与网络失败分类、显式来源失败不静默 fallback（其它来源不被调用）。
+- [新功能] 新增不可变行情冻结快照（表 `market_data_snapshots` + `src/repositories/market_snapshot_repo.py`）：记录标的、市场、请求与解析区间、行数、复权口径、币种、成交量单位、来源、覆盖状态、质量等级与内容哈希；身份由「口径 + 区间 + 内容哈希」派生，**同源不同复权得到不同 `snapshot_id`**；只增不改（无 update/delete），重复写入幂等且不覆盖既有快照，便于旧运行重放。
+- [改进] 快照数据质量门槛：来源/复权/币种/单位或区间覆盖任一未知时不得标为 `verified`（来源或复权未知记为 `unknown`，其余记为 `partial`）；新增 `ensure_input_eligible()` 作为默认策略收益计算的前置校验，`unknown`/`partial` 快照被显式拒绝；区间覆盖只依据真实数据首尾判断，不用 0 或前值补齐。
+- [测试] 新增 `tests/test_market_snapshot_freeze.py`（14 项）：同源不同复权身份不同、幂等且 `created_at` 不变、`payload_hash` 与稳定序列化一致、重拉不覆盖旧快照、未知单位/来源/复权不可用于策略、请求近三年不被标为覆盖完整、仓储不暴露变更 API。
+- [新功能] 回测运行记录引用冻结快照：`backtest_runs` 追加 `snapshot_id`、`data_quality_status`、`input_eligibility`、`engine_kind`、`engine_version`（均可空，旧记录兼容）；`run_backtest()` 新增可选 `snapshot_id` 与 `engine_kind`，运行证据中记录 `snapshot` 块，回测运行查询接口同步透出这些字段。
+- [改进] 按引擎类型区分数据门槛：报告事后评估（`ai_report_evaluation`，默认）允许探索性输入并在提供快照时如实记录质量；其它 `engine_kind`（策略引擎）**必须**引用 `input_eligibility=True` 的快照，否则在入口直接拒绝，避免用 unknown/partial 数据产出可执行收益口径。
+- [测试] 新增 `tests/test_backtest_snapshot_link.py`（7 项）：策略引擎缺快照/引用不合格快照被拒、合格快照被记录并可在运行记录中回读、未知 `snapshot_id` 被拒、报告评估无快照时保持原语义、报告评估允许不合格快照但如实标记、运行记录 schema 声明并保留快照字段。
+- [新功能] 新增只读快照查询：`GET /api/v1/backtest/snapshots`（按标的列出元数据）与 `GET /api/v1/backtest/snapshots/{snapshot_id}`（详情，`include_bars=true` 时返回冻结明细），未知 ID 返回 404；新增 Agent 只读工具 `get_market_snapshot`（列表/详情/不存在分支，绝不写入或新增快照）。
+- [改进] 冻结快照增加体积预算与规模概览：单份 payload 超过 `SNAPSHOT_MAX_PAYLOAD_BYTES`（默认 5 MiB）时拒绝写入，`storage_stats()` 报告 `rows`/`payload_bytes`/`within_budget`/`instruments` 供判断是否需要导出或人工清理。
+- [测试] 新增 `tests/test_market_snapshot_api.py`（8 项）：列表不返回明细、详情按需返回 `bars`、未知 ID 404、不合格快照暴露状态与缺失原因、超预算拒绝且不入库、`storage_stats` 计数、Agent 工具列表/详情/不存在且不新增快照。
+- [chore] AI 协作资产治理：`.agents/` 明确为本地脚手架并纳入 `.gitignore`，`.agents/skills/` 改由新增的 `scripts/sync_agent_skills.py` 从单一真源 `.claude/skills/` 生成；`scripts/check_ai_assets.py` 新增「拒绝入库 `.agents` 文件」与「镜像漂移校验」两项检查，AGENTS.md 与 `.claude/skills/README.md` 同步更新。
+- [修复] 修复测试隔离缺陷：`tests/litellm_stub.py` 的 `_DummyRouter` 现在接受与真实 `Router` 相同的构造参数（并补齐 `completion`/`acompletion`/`completion_cost`），避免 stub 先于真实 litellm 安装时 `Router(model_list=...)` 抛 `TypeError`，消除「同一批测试全量通过、子集失败」的顺序依赖。
+- [chore] 精简 Docker 构建上下文：`.dockerignore` 增加前端 `node_modules`/`dist`、`.git/`、`.github/`、`.agents/`、`.claude/`、`tests/` 与 pytest 缓存等条目，构建上下文由约 2.00 MB 降至约 1.02 kB。
+- [新功能] Web 回测运行卡片展示冻结快照引用：显示 `snapshot_id`、质量等级（`verified`/`partial`/`unknown`）、是否满足默认策略收益计算的输入资格，以及引擎类型与版本；并按需读取 `GET /api/v1/backtest/snapshots/{snapshot_id}` 核对来源、复权、币种、单位、冻结区间、条数与内容哈希。没有快照时不再让读者以为口径已知，而是明确提示「未关联冻结行情快照，复权口径与输入资格无法核对」；快照元数据取不到时如实说明尚未核对，不静默降级为「可信」；非报告评估引擎（如 `portfolio_daily`）不再被标注为「AI 报告事后评估」。
+- [测试] 新增 Web 回归 `apps/dsa-web/src/components/BacktestRunCard.test.tsx`（+5 项）：有快照时展示质量与资格并核对口径、不合格快照标为不可作为策略收益依据、无快照时不宣称口径已知、快照元数据失败时保留运行记录并提示未核对、非报告评估引擎套用正确文案。
+- [改进] 快照覆盖判定新增交易日历核对：新增 `trading_calendar.count_sessions()` 按市场推断区间应有 session 数（日历未安装 / 市场未知 / 区间非法 / 日历异常一律返回 `None`，绝不猜测），`compute_coverage()` 用它补齐「首尾齐全但中间缺一大段」的漏检；质量明细新增 `coverage.basis`（`trading_calendar` / `endpoints_only`）、`expected_sessions`、`rows`、`deficit`，让「只比对了首尾日期」不再看起来像「已核对完整」。赤字容差 10% 仅吸收日历噪声，不参与快照身份与幂等语义。
+- [新功能] 新增快照导出工具 `scripts/export_market_snapshots.py`：导出 `<out>/snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览），支持 `--instrument` / `--limit`；**只读**（不写入/修改/删除快照），内容哈希不匹配时点名并返回退出码 2，被 `--limit` 截断时显式告警，序列化复用仓库统一稳定序列化（日期归一、拒绝 NaN/Infinity）。
+- [改进] Web 快照区块展示覆盖判定依据：区分「已按交易日历核对区间 session 数（应有 N 个，缺口 M 个）」与「仅比对首尾日期（日历不可用，区间内 session 数未核对）」，避免把首尾判定读成完整核对。
+- [测试] 新增 `tests/test_market_snapshot_session_coverage.py`（17 项）与 `tests/test_export_market_snapshots.py`（7 项）：日历缺失/市场未知/区间非法/日历异常均返回 `None`、大段缺失被拦、容差边界、覆盖依据可审计、导出计数与文件哈希、篡改点名、导出只读、标的过滤、`--limit` 截断与 CLI 退出码；Web `BacktestRunCard` 回归再 +2 项（日历核对 vs 仅首尾）。
+
+
+
+
+
+
+
+
+
 
 ## [3.15.0] - 2026-05-05
 

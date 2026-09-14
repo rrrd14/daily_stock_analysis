@@ -613,6 +613,8 @@ schedule:
 
 内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。
 
+> 🕒 **北京时间迁移状态**：`SCHEDULE_TIME`、数据库默认时间戳、日志、主入口和大盘复盘已使用 `src/time_utils.py`，这些入口不依赖宿主机 `TZ`。Agent 提供 `get_current_time`，并在每轮系统提示注入 `[PROGRAM_CLOCK]`。但截至2026-09-14复核，任务、新闻、持仓、部分API仍有宿主机时间调用，不能宣称全链路已统一；旧无时区时间也不会自动换算。完成迁移前仍应保持部署时区为 `Asia/Shanghai`，同时查看源行情时间，不能把抓取时间当作行情时间。详细缺口和验收见 [改进计划](quant-improvement-plan.md) 与 [数据/时间设计](architecture/market-data-time-contract.md)。
+
 #### 命令行方式
 
 ```bash

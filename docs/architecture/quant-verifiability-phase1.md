@@ -1,6 +1,8 @@
 # 第一阶段：可核验的回测运行记录
 
-状态：第一阶段实现完成，尚未部署。范围是现有 AI 报告事后评估，不是连续账户策略回测。
+状态：第一阶段运行证据能力已落地；2026-09-14 复核后，数据可信度验收仍需阶段 1.1 补齐。当前文档不证明目标服务器已部署或线上行情已验证。范围是现有 AI 报告事后评估，不是连续账户策略回测。
+
+后续以 [修订改进计划](../quant-improvement-plan.md) 和 [数据与时间契约设计](market-data-time-contract.md) 为准。已存在运行快照不代表指标输入有效、评分正确或日期边界完整；这三项必须单独验收。
 
 ## 目标与边界
 
@@ -31,3 +33,21 @@
 ## 发布、风险与回滚
 
 建表通过现有 create_all 增量完成；旧记录无快照，不伪造补齐。快照随运行次数增长，应监控 SQLite 体积；本阶段不自动删除证据。接口追加字段，旧客户端兼容。回滚应用代码即可，保留新表；上线前备份数据库。Docker/服务器发布独立执行，不自动替换已部署容器。
+
+## 冻结快照与覆盖判定依据（WP4）
+
+不可变快照表 `market_data_snapshots`（仓储 `src/repositories/market_snapshot_repo.py`，只增不改）保存每次研究的输入行情与口径：标的、市场、请求/解析区间、行数、来源、复权、币种、成交量单位、覆盖状态、质量等级与内容哈希。身份 = 口径 + 区间 + 内容哈希，因此同源不同复权是**不同**快照，不会互相冒充；同一份输入重复写入幂等且不覆盖既有记录，旧运行可重放。`backtest_runs` 记录 `snapshot_id` / `data_quality_status` / `input_eligibility` / `engine_kind` / `engine_version`。
+
+质量等级由 `assess_data_quality()` 判定：来源或复权未知 → `unknown`（不可用于任何收益口径计算）；仅币种/单位未知或覆盖不足 → `partial`；全部已知且覆盖完整 → `verified`。策略引擎（`engine_kind != ai_report_evaluation`）必须引用 `input_eligibility=True` 的快照，否则入口拒绝；报告事后评估保持原语义，并在提供快照时如实记录其质量。
+
+覆盖判定分两层，`quality.coverage.basis` 写明实际用了哪层：
+
+| basis | 触发条件 | 判定内容 |
+| --- | --- | --- |
+| `trading_calendar` | 日线且日历可用（`trading_calendar.count_sessions()` 返回非空） | 首尾落在请求区间内，**且**行数不少于应有 session 数的 90% |
+| `endpoints_only` | 日历不可用（未安装 `exchange-calendars`、市场未知、区间非法或超出日历范围） | 只比对首尾日期，各允许 10 个自然日偏差 |
+
+第二层用于抓「首尾齐全但中间缺一大段」——这类输入在只看首尾时会被误判为覆盖完整。日历取不到时退回首尾判定并**如实标注** `endpoints_only`，不会把「无法核对」写成「已核对完整」。10% 赤字容差用于吸收日历自身的节假日误差，不参与快照身份与幂等语义。预期区间未按「上市日期」收紧：仓库当前没有运行时上市日期来源，缺这类信息时判定只会更保守，不会放宽。
+
+导出与迁移：`python scripts/export_market_snapshots.py --out <dir> [--instrument CODE] [--limit N]` 生成 `snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览）。工具**只读**：不写入、不修改、不删除快照；内容哈希不匹配会点名该快照并以退出码 2 结束，被 `--limit` 截断时显式告警。
+
