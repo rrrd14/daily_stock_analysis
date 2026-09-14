@@ -16,6 +16,30 @@ env/
 *.swp
 *.swo
 
+# 版本控制与 CI（构建只需工作副本文件）
+.git/
+.github/
+
+# 前端依赖与构建产物：镜像内由 web-builder 阶段 npm ci + npm run build 重建，
+# 不要把宿主机的 node_modules 带进构建上下文（体积大且跨平台不可用）。
+apps/dsa-web/node_modules/
+apps/dsa-web/dist/
+apps/dsa-desktop/node_modules/
+apps/dsa-desktop/dist/
+
+# 本地 AI 协作产物（规则真源是 AGENTS.md 与 .claude/skills，运行时镜像不需要）
+.agents/
+.claude/
+.codex/
+
+# 本地测试与临时产物
+tests/
+pytest-cache-files-*/
+.pytest_cache/
+.coverage
+htmlcov/
+full-test.txt
+
 # 忽略数据文件（可选，如果想持久化就注释掉）
 # data/
 # logs/

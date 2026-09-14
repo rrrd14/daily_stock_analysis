@@ -13,6 +13,9 @@ CLAUDE = ROOT / "CLAUDE.md"
 COPILOT = ROOT / ".github" / "copilot-instructions.md"
 INSTRUCTIONS_DIR = ROOT / ".github" / "instructions"
 CLAUDE_SKILLS_DIR = ROOT / ".claude" / "skills"
+AGENTS_DIR = ROOT / ".agents"
+AGENTS_SKILLS_DIR = AGENTS_DIR / "skills"
+SYNC_SKILLS_SCRIPT = ROOT / "scripts" / "sync_agent_skills.py"
 
 REQUIRED_INSTRUCTION_FILES = {
     "backend.instructions.md",
@@ -31,6 +34,7 @@ REQUIRED_GITIGNORE_SNIPPETS = (
     ".claude/*",
     "!.claude/skills/",
     "!.claude/skills/**",
+    ".agents/",
 )
 
 
@@ -113,6 +117,40 @@ def ensure_no_tracked_claude_artifacts() -> None:
         fail(f"tracked .claude artifact outside skills/: {path}")
 
 
+def ensure_agent_skills_mirror() -> None:
+    """`.agents/skills/` 只能是 `.claude/skills/` 的脚本生成镜像。
+
+    - 不得入库（否则会变成手工长期维护的同义副本）；
+    - 本地存在时必须与生成结果一致（漂移即失败）。
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--", ".agents"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if tracked:
+        fail(f"tracked .agents artifact is not allowed: {tracked[0]}")
+
+    if not AGENTS_SKILLS_DIR.exists():
+        return
+
+    ensure_file_exists(SYNC_SKILLS_SCRIPT, "agent skills sync script")
+    checked = subprocess.run(
+        [sys.executable, str(SYNC_SKILLS_SCRIPT), "--check"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if checked.returncode != 0:
+        fail(
+            "'.agents/skills' drifted from '.claude/skills'; "
+            "run: python scripts/sync_agent_skills.py"
+        )
+
+
 def main() -> None:
     ensure_symlink()
     ensure_copilot_entry()
@@ -120,6 +158,7 @@ def main() -> None:
     ensure_skill_files()
     ensure_gitignore_rules()
     ensure_no_tracked_claude_artifacts()
+    ensure_agent_skills_mirror()
     print("[ai-assets] OK")
 
 

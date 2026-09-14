@@ -80,6 +80,10 @@ verify_*.py
 !.claude/skills/
 !.claude/skills/**
 
+# .agents/ 是本地 agent 脚手架（由 scripts/sync_agent_skills.py 从 .claude/skills 生成），
+# 不作为规则真源入库，避免出现手工维护的同义副本。
+.agents/
+
 # ignore static files
 static/
 /apps/dsa-desktop/dist/

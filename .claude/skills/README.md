@@ -7,4 +7,13 @@
 - 本目录中的 skill 需要与 `AGENTS.md` 保持一致
 - `.claude/reviews/` 属于本地分析产物，不作为规则真源
 
+`.agents/skills/`（本地 agent 脚手架）由本目录生成，禁止手工维护：
+
+```bash
+python scripts/sync_agent_skills.py          # 生成/更新镜像
+python scripts/sync_agent_skills.py --check  # 只校验是否漂移
+```
+
+`.agents/` 不入库；`scripts/check_ai_assets.py` 会拒绝入库的 `.agents` 文件并校验镜像一致性。
+
 如果未来需要兼容其他 agent 目录（如 `.agents/skills/` 或 `.github/skills/`），应先明确单一真源，再通过脚本或镜像同步，而不是手工长期维护多份同义内容。
