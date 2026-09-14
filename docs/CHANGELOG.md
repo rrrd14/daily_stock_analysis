@@ -79,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增快照导出工具 `scripts/export_market_snapshots.py`：导出 `<out>/snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览），支持 `--instrument` / `--limit`；**只读**（不写入/修改/删除快照），内容哈希不匹配时点名并返回退出码 2，被 `--limit` 截断时显式告警，序列化复用仓库统一稳定序列化（日期归一、拒绝 NaN/Infinity）。
 - [改进] Web 快照区块展示覆盖判定依据：区分「已按交易日历核对区间 session 数（应有 N 个，缺口 M 个）」与「仅比对首尾日期（日历不可用，区间内 session 数未核对）」，避免把首尾判定读成完整核对。
 - [测试] 新增 `tests/test_market_snapshot_session_coverage.py`（17 项）与 `tests/test_export_market_snapshots.py`（7 项）：日历缺失/市场未知/区间非法/日历异常均返回 `None`、大段缺失被拦、容差边界、覆盖依据可审计、导出计数与文件哈希、篡改点名、导出只读、标的过滤、`--limit` 截断与 CLI 退出码；Web `BacktestRunCard` 回归再 +2 项（日历核对 vs 仅首尾）。
+- [chore] CI 新增 `docker-e2e` job：在真实 Linux runner 上构建镜像并验证可启动、只读接口可用、前端静态产物存在、以非 root 用户运行且 `data/logs/reports` 可写（R6）；同时 `web-gate` 新增 `npm run test`，使仓库内 47 个前端单测文件首次进入阻断链路。
+
+
 
 
 

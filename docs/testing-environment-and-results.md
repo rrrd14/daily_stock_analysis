@@ -355,7 +355,23 @@ docker run --rm -v <stage>:/app -w /app node:20 sh -c \
 
 注意：首次容器运行被中断，其日志中的 `31 files / 272 tests` 属**未跑完**的中间结果，不作为证据；以完整跑完的 47/405 为准。
 
-**CI 现状（重要）**：`web-gate` 只执行 `npm ci` + `npm run lint` + `npm run build`，**不执行 `npm run test`**，`scripts/ci_gate.sh` 也不含任何 Node 步骤。仓库内 47 个前端测试文件此前从未在 CI 执行，本轮为首次全量跑通；若要把前端回归纳入阻断链路，需要单独修改 `web-gate`。
+**CI 现状（重要）**：`web-gate` 只执行 `npm ci` + `npm run lint` + `npm run build`，**不执行 `npm run test`**，`scripts/ci_gate.sh` 也不含任何 Node 步骤。仓库内 47 个前端测试文件此前从未在 CI 执行，本轮为首次全量跑通；本分支已把 `npm run test` 加入 `web-gate`（该 job 尚未在 GitHub runner 上跑过）。
+
+### 9.5.1 Docker E2E 复跑（本分支代码，Windows/Docker Desktop）
+
+```bash
+bash scripts/docker_e2e.sh
+```
+
+结果：**14 项断言全 PASS**。镜像为多阶段构建，前端在镜像内执行 `npm ci` + `npm run build`（即 `tsc -b` 类型检查 + vite 打包），因此这条链路同时验证了新前端代码可在镜像内构建：
+
+- 镜像构建完成；`.dockerignore` 生效后构建上下文仅 1.02 kB（代码层 354.96 kB）；
+- 命名卷属主初始化为 `1000:1000`（R6 的本地验证路径）；
+- 服务就绪后 `/api/health`、`/api/v1/auth/status`、`/api/v1/system/config/setup/status`、`/api/v1/agent/skills`、`/docs` 均 200，未知 API 返回 JSON 404；
+- 首页 200 且其引用的 `/assets/index-Dia7QUsN.js` 可访问（防空白页回归）；
+- 容器以 `dsa` 运行，`/app/data`、`/app/logs`、`/app/reports` 在 UID/GID 1000 下可写，测试结束时容器仍在运行。
+
+边界：仍是 Windows/Docker Desktop 上的验证；R6 关注的「Linux runner 调用者 UID≠1000」只有在 CI 的 `docker-e2e` job（本分支新增）首次执行后才能算被证明。
 
 
 ### 9.6 本轮边界

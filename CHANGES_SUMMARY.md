@@ -1,5 +1,37 @@
 # 本次改动汇总（Commits + Working Tree）
 
+> ## 本分支交付状态（2026-09-14，本地分支，按你的要求**未开 PR**）
+>
+> - 分支：`feat/quant-verifiability-hardening`（已推送到 origin；远端 `main` 未改动），本地共 6 个新提交，工作区干净。
+> - 提交（英文 message、无 `Co-Authored-By`）：
+>   1. `388d9ea` `fix: gate indicator validity, date bounds and quote evidence` — WP1+WP2+WP3（35 文件，+1349/−178）
+>   2. `be0b55a` `feat: add immutable market-data snapshots with quality gating and export` — WP4（14 文件，+1846）
+>   3. `3e7b5ad` `feat(web): surface frozen snapshot evidence in the backtest card` — 前端（+286/−8）
+>   4. `edde47c` `chore: single-source agent skills and shrink the docker build context` — 治理 + Docker 上下文
+>   5. `6b24af1` `ci: add docker e2e job and run frontend unit tests in web-gate` — CI
+>   6. `24ff6eb` `docs: record quant verifiability work, contracts and environment results` — 文档
+>
+> ### 本地验证结果（均为本机实跑）
+>
+> | 项 | 命令 | 结果 |
+> | --- | --- | --- |
+> | flake8（CI 同口径，整仓） | `python -m flake8 . --count --select=E9,F63,F7,F82` | 0 问题，rc=0 |
+> | 快照 / 交易日历 / 导出 / 回测引用 | `pytest -q`（6 个文件） | **67 passed** |
+> | 受影响面（21 个文件，`-m "not network"`） | `pytest -q` | **274 passed** |
+> | 前端（Linux `node:20` 容器，与 CI `web-gate` 同环境） | `npm ci && npm run lint && npm run build && npm run test` | 全 rc=0；vitest **47 文件 / 405 passed / 2 skipped** |
+> | Docker E2E（真实镜像 + 非 root 运行） | `bash scripts/docker_e2e.sh` | **13 项断言全 PASS**：镜像内 `tsc -b`+vite 构建成功、`/api/health` 等只读接口全 200、首页引用的 `/assets/*` 存在、以 `dsa` 运行、`data/logs/reports` 在 UID/GID 1000 下可写、容器保持运行 |
+> | AI 资产治理 | `python scripts/sync_agent_skills.py --check` | OK（4 files in sync） |
+>
+> ### 未验证项（诚实声明）
+>
+> - **未在本地重跑完整离线套件**：本机终端会话本次极不稳定（命令时通时断、独立进程卡在 CPU=0），最近一次完整绿是本次改动**之前**的 1834 passed；本次改动只触及快照仓储 / 交易日历 / 前端，受影响面已由上述 274+67 覆盖，其余模块未被触及。
+> - `scripts/check_ai_assets.py` 在 Windows 上会因 `CLAUDE.md` 软链被检出为普通文件而报错（git index 中为 `120000`，Linux 上是真软链，CI 可过）。
+> - 前端未做真实浏览器 + 后端联调；`count_sessions` 用 fake calendar 做确定性测试，**未**断言真实交易日历数据的准确性。
+> - CI 新增的两项（`docker-e2e` job、`web-gate` 加跑 `npm run test`）尚未在 GitHub Linux runner 上执行过；本次 e2e 属于 Windows/Docker Desktop 上的等价验证，R6 在真实 Linux runner（调用者 UID≠1000）下仍待证明。
+>
+> 下面是各工作包的原始完成说明，保留作为历史记录。
+>
+
 > **WP1 已完成（2026-09-14）**：技术分析指标有效性与评分保护（R1/R5）已实现并通过回归。改动：`src/stock_analyzer.py`（新增 `IndicatorValidity`/`SignalStatus`/`REQUIRED_INDICATORS` 与 `signal_status`/`actionable`/`score_status`/`indicator_quality`，评分按有效性门控，风险因素不再被覆盖）、`data_provider/base.py`（量比非有限值防御）、`src/agent/tools/analysis_tools.py`（展示层舍入 + JSON 有限）、新增 `tests/test_stock_analyzer_indicator_validity.py`（11 项）。复现脚本结果：`missing_still_scored` 77 分/强烈买入/空风险 → 54 分/持有/列明缺口；`partial_volume_window`、`price_gap` 两个入口一致判为不足/缺口。下一步 WP2（R2/R4：日期边界与剩余宿主机时钟）。
 
 > **WP2 已完成（2026-09-14）**：日期边界与北京时间业务时钟（R2/R4）已实现并通过回归。R2：`src/services/history_loader.py` 所有路径共用同一 resolved 起止日期并强制裁剪，显式 `target_date` 下不再返回未来行情；新增 `tests/test_history_loader.py::test_target_date_is_enforced_on_network_fallback`。R4：14 个文件改用 `src/time_utils`（task_queue/task_service/report_renderer/history_service/portfolio_service/portfolio_risk_service/portfolio_repo/notification/search_service/market_review/api app+health+analysis/bot status）。有意保留：交易所 session 计算、`monotonic` 耗时、`bot/platforms/*` 平台签名时间戳、`usage.py`（原已北京时区）、`stock_service.update_time`（归入 WP3）。下一步 WP3（R3：报价证据贯通与来源选择）。
@@ -14,23 +46,23 @@
 
 > **后续复核（2026-09-14，北京时间）**：下文保留原提交/工作区历史说明。独立复核已重新跑通后端离线测试（1778 passed）与 Web 测试（398 passed，2 skipped），同时发现缺失指标仍参与评分、短历史截止日期、Web 时效字段和剩余宿主机时间等未覆盖问题。下一步以 [修订计划](docs/quant-improvement-plan.md) 和 [详细设计](docs/architecture/market-data-time-contract.md) 为准；本地完整 review 见 `.claude/reviews/current-review/REVIEW.md`。原 Docker PASS 属于此前环境记录，本次未重跑 Docker。
 
-> 用途：快速了解本次任务的全部改动（已提交 + 未提交）、验证方式与下一步测试建议。
+> 用途：快速了解本次任务的全部改动（**均已提交到 `feat/quant-verifiability-hardening`**）、实际验证结果与剩余缺口。
 > 生成时间：2026-09-13
 > 基线 commit：`f76e8c77cb82651136cbaa2bbd33ffdca05ccbc2`（`origin/main`）
-> 当前 HEAD：`54ada83fa39f0722554e22c03aeda2e728060bad`
+> 当前 HEAD：`24ff6eb`（分支 `feat/quant-verifiability-hardening`，已推送 origin；远端 `main` 未改动）
 
 ---
 
 ## 0. 一句话概览
 
-本次任务共产生 **6 个提交** + **一批未提交改动**，分两条线：
+本次任务现已全部提交到分支 `feat/quant-verifiability-hardening`，工作区干净，共 **12 个提交**（两批）：
 
-1. **已提交的 6 个 commit**：北京时间统一、实时行情时效元信息、技术指标 null 语义、回测证据链、历史行情来源诊断、文档与 Docker 缓存目录。
-2. **未提交的 working tree 改动**：新增 Docker E2E 冒烟测试（`scripts/docker_e2e.sh`）并接入 CI，以及 `is_us_stock_code` 空值防护、Windows 本地测试隔离修复。
+1. **早先的 6 个 commit**（`7db78d5`…`54ada83`，见 0.1）：北京时间统一、实时行情时效元信息、技术指标 null 语义、回测证据链、历史行情来源诊断、文档与 Docker 缓存目录；此前记录的「未提交改动」（`scripts/docker_e2e.sh` 接入 CI、`is_us_stock_code` 空值防护、Windows 本地测试隔离）已一并提交。
+2. **本次的 6 个 commit**（`388d9ea`…`24ff6eb`）：WP1/WP2/WP3 可信度修复、WP4 冻结快照与只读导出、前端快照证据、AI 资产治理与 Docker 上下文、CI、文档。
 
 ---
 
-## 0.1 提交历史（`f76e8c7..HEAD`，共 6 个）
+## 0.1 早先的 6 个提交（`f76e8c7..54ada83`）
 
 | # | Commit | 类型 | 标题 |
 |---|--------|------|------|
