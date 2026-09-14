@@ -28,9 +28,18 @@ class BacktestRunRepository:
     def __init__(self, db):
         self.db = db
 
-    def create(self, run_id, payload):
+    def create(self, run_id, payload, *, snapshot_id=None, data_quality_status=None,
+               input_eligibility=None, engine_kind=None, engine_version=None):
         with self.db.get_session() as session:
-            session.add(BacktestRun(run_id=run_id, payload=json.dumps(json_value(payload))))
+            session.add(BacktestRun(
+                run_id=run_id,
+                payload=json.dumps(json_value(payload)),
+                snapshot_id=snapshot_id,
+                data_quality_status=data_quality_status,
+                input_eligibility=input_eligibility,
+                engine_kind=engine_kind,
+                engine_version=engine_version,
+            ))
             session.commit()
 
     def finish(self, run_id, status, payload):
@@ -51,7 +60,12 @@ class BacktestRunRepository:
         result = {"run_id": row.run_id, "status": row.status,
                   "created_at": row.created_at.isoformat(),
                   "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-                  "sha256": row.sha256}
+                  "sha256": row.sha256,
+                  "snapshot_id": row.snapshot_id,
+                  "data_quality_status": row.data_quality_status,
+                  "input_eligibility": row.input_eligibility,
+                  "engine_kind": row.engine_kind,
+                  "engine_version": row.engine_version}
         if detail:
             result["evidence"] = json.loads(row.payload)
         return result

@@ -285,6 +285,54 @@ class BacktestRun(Base):
     payload = Column(Text, nullable=False)
     sha256 = Column(String(64), nullable=True)
 
+    # 冻结快照引用（WP4）：报告评估可为空；策略引擎必须引用合格快照。
+    snapshot_id = Column(String(32), nullable=True, index=True)
+    data_quality_status = Column(String(16), nullable=True)
+    input_eligibility = Column(Boolean, nullable=True)
+    engine_kind = Column(String(32), nullable=True)
+    engine_version = Column(String(32), nullable=True)
+
+
+class MarketDataSnapshot(Base):
+    """不可变的行情冻结快照（研究/回测的输入身份）。
+
+    与可变的 ``StockDaily`` 在线缓存分离：快照一旦创建不得原地修改或自动删除，
+    运行记录通过 ``snapshot_id`` 引用它，从而支持重放与口径核验。
+    身份包含复权口径、币种、成交量单位与来源，因此「同源不同复权」会得到不同 id。
+    """
+
+    __tablename__ = "market_data_snapshots"
+
+    snapshot_id = Column(String(32), primary_key=True)
+    schema_version = Column(String(16), nullable=False, default="1")
+
+    instrument = Column(String(20), nullable=False, index=True)
+    market = Column(String(10), nullable=True)
+    interval = Column(String(10), nullable=False, default="daily")
+
+    # 请求区间（用户想要什么）与解析区间（程序实际取到什么）
+    requested_start = Column(Date, nullable=True)
+    requested_end = Column(Date, nullable=True)
+    resolved_start = Column(Date, nullable=True)
+    resolved_end = Column(Date, nullable=True)
+
+    rows = Column(Integer, nullable=False, default=0)
+
+    # 口径：未知时不得默认成已验证
+    price_adjustment = Column(String(32), nullable=True)
+    currency = Column(String(10), nullable=True)
+    volume_unit = Column(String(16), nullable=True)
+    source = Column(String(50), nullable=True)
+
+    coverage_complete = Column(Boolean, nullable=True)
+    data_quality_status = Column(String(16), nullable=False, default="unknown")
+    input_eligibility = Column(Boolean, nullable=False, default=False)
+    quality_json = Column(Text, nullable=True)
+
+    payload = Column(Text, nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=beijing_now_naive)
+
 
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""

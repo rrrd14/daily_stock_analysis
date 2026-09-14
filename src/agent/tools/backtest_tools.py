@@ -271,8 +271,63 @@ get_backtest_run_tool = ToolDefinition(
 )
 
 
+def _handle_get_market_snapshot(snapshot_id: str = "", instrument: str = "", limit: int = 10):
+    """只读查询冻结行情快照；无 snapshot_id 时按标的列出最近快照。"""
+    try:
+        from src.repositories.market_snapshot_repo import MarketDataSnapshotRepository
+        from src.storage import DatabaseManager
+
+        repo = MarketDataSnapshotRepository(DatabaseManager.get_instance())
+        if not snapshot_id:
+            snapshots = repo.list(instrument=instrument or None,
+                                  limit=max(1, min(int(limit or 10), 50)))
+            return {
+                "snapshots": snapshots,
+                "info": ("Read-only frozen market-data snapshots. input_eligibility=false means "
+                         "the snapshot must not be used for default strategy return computation. "
+                         "No Web page exists for snapshots yet."),
+            }
+        record = repo.get(snapshot_id, detail=False)
+        if record is None:
+            return {"status": "not_found", "info": "No frozen snapshot exists for this ID."}
+        quality = record.get("quality") or {}
+        return {
+            **record,
+            "missing": quality.get("missing"),
+            "info": ("Frozen input identity. data_quality_status=unknown/partial must not be "
+                     "reported as verified; a snapshot reference does not prove the data is "
+                     "point-in-time accurate."),
+            "api_path": f"/api/v1/backtest/snapshots/{record['snapshot_id']}",
+        }
+    except Exception:
+        logger.warning("[backtest_tools] get_market_snapshot error", exc_info=True)
+        return {"error": "Failed to retrieve market data snapshot."}
+
+
+get_market_snapshot_tool = ToolDefinition(
+    name="get_market_snapshot",
+    description=("Read a frozen market-data snapshot (input identity for research/backtests). "
+                 "Omit snapshot_id to list recent snapshots for an instrument. Read-only: it "
+                 "never fetches new data and never creates a snapshot. Disclose "
+                 "data_quality_status and input_eligibility; unknown/partial snapshots are "
+                 "research-only."),
+    parameters=[
+        ToolParameter(name="snapshot_id", type="string", required=False,
+                      description="Existing frozen snapshot ID; omit to list recent snapshots."),
+        ToolParameter(name="instrument", type="string", required=False,
+                      description="Instrument code used when listing, e.g. '588000' or 'AAPL'."),
+        ToolParameter(name="limit", type="integer", required=False, default=10,
+                      description="Max snapshots to list (default: 10, max: 50)."),
+    ],
+    handler=_handle_get_market_snapshot,
+    category="data",
+)
+
+
+
 ALL_BACKTEST_TOOLS = [
     get_backtest_run_tool,
+    get_market_snapshot_tool,
     get_skill_backtest_summary_tool,
     get_strategy_backtest_summary_tool,
     get_stock_backtest_summary_tool,

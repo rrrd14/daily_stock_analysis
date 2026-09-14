@@ -9,7 +9,7 @@ import logging
 import hashlib
 from pathlib import Path
 from uuid import uuid4
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, select
@@ -18,6 +18,10 @@ from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.backtest_run_repo import BacktestRunRepository, json_value
+from src.repositories.market_snapshot_repo import (
+    MarketDataSnapshotRepository,
+    ensure_input_eligible,
+)
 from src.repositories.stock_repo import StockRepository
 from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager
 
@@ -34,10 +38,23 @@ class BacktestService:
         self.repo = BacktestRepository(self.db)
         self.stock_repo = StockRepository(self.db)
 
+    ENGINE_KIND_REPORT_EVALUATION = "ai_report_evaluation"
+
     def run_backtest(
         self, *, code=None, force=False, eval_window_days=None, min_age_days=None, limit=200,
+        snapshot_id: Optional[str] = None,
+        engine_kind: str = ENGINE_KIND_REPORT_EVALUATION,
     ) -> Dict[str, Any]:
-        """Record the inputs actually evaluated; never infer execution from a rollup."""
+        """Record the inputs actually evaluated; never infer execution from a rollup.
+
+        快照门槛（WP4）：
+
+        - ``engine_kind == "ai_report_evaluation"``（默认）：报告事后评估，允许探索性
+          输入；若提供 ``snapshot_id`` 则记录其质量与资格，但不拒绝不合格快照。
+        - 其它 ``engine_kind``（策略引擎）：**必须**提供 ``snapshot_id`` 且该快照
+          必须 ``input_eligibility == True``，否则直接拒绝，避免用 unknown/partial
+          数据产出可执行收益口径。
+        """
         config = get_config()
         params = {
             "code": code, "force": force, "limit": int(limit),
@@ -50,8 +67,12 @@ class BacktestService:
             "engine_version": str(getattr(config, "backtest_engine_version", "v1")),
             "neutral_band_pct": float(getattr(config, "backtest_neutral_band_pct", 2.0)),
         }
+
+        snapshot_ref = self._resolve_snapshot_reference(
+            snapshot_id=snapshot_id, engine_kind=engine_kind,
+        )
         evidence = {
-            "schema_version": 1, "kind": "ai_report_evaluation",
+            "schema_version": 1, "kind": engine_kind,
             "parameters": {**params, **engine_settings},
             "code_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                             for path in (Path(__file__), Path(__file__).parents[1] / "core/backtest_engine.py")},
@@ -60,9 +81,23 @@ class BacktestService:
                             "Current stored/fetched data does not prove historical point-in-time availability."],
             "items": [],
         }
+        if snapshot_ref is not None:
+            evidence["snapshot"] = {
+                "snapshot_id": snapshot_ref["snapshot_id"],
+                "data_quality_status": snapshot_ref["data_quality_status"],
+                "input_eligibility": snapshot_ref["input_eligibility"],
+                "coverage_complete": snapshot_ref["coverage_complete"],
+            }
         run_id = uuid4().hex
         runs = BacktestRunRepository(self.db)
-        runs.create(run_id, evidence)
+        runs.create(
+            run_id, evidence,
+            snapshot_id=snapshot_ref["snapshot_id"] if snapshot_ref else None,
+            data_quality_status=snapshot_ref["data_quality_status"] if snapshot_ref else None,
+            input_eligibility=snapshot_ref["input_eligibility"] if snapshot_ref else None,
+            engine_kind=engine_kind,
+            engine_version=engine_settings["engine_version"],
+        )
         try:
             stats = self._run_backtest(**params, audit_items=evidence["items"], engine_settings=engine_settings)
             status = ("empty" if not stats["processed"] else
@@ -83,6 +118,22 @@ class BacktestService:
 
     def get_runs(self):
         return BacktestRunRepository(self.db).recent()
+
+    def _resolve_snapshot_reference(self, *, snapshot_id, engine_kind):
+        """解析并校验快照引用；策略引擎必须使用合格快照。"""
+        is_strategy_engine = engine_kind != self.ENGINE_KIND_REPORT_EVALUATION
+        if snapshot_id is None:
+            if is_strategy_engine:
+                raise ValueError(
+                    f"engine_kind={engine_kind} requires an explicit eligible snapshot_id"
+                )
+            return None
+        snapshot = MarketDataSnapshotRepository(self.db).get(snapshot_id)
+        if snapshot is None:
+            raise ValueError(f"Unknown snapshot_id: {snapshot_id}")
+        if is_strategy_engine:
+            ensure_input_eligible(snapshot)
+        return snapshot
 
     @staticmethod
     def _snapshot_bar(bar):
