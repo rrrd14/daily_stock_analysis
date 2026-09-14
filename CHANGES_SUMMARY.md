@@ -2,7 +2,7 @@
 
 > ## 本分支交付状态（2026-09-14，本地分支，按你的要求**未开 PR**）
 >
-> - 分支：`feat/quant-verifiability-hardening`（已推送 origin；远端 `main` 未改动），本地共有 **14 个**提交（早先 6 个 + 上一批 7 个 + 本轮 R1–R5 修复 1 个），工作区干净。
+> - 分支：`feat/quant-verifiability-hardening`（已推送 origin；远端 `main` 未改动）。相对 `main` 的提交见下表；本轮 `daily_return` 引擎已提交（feat `c453b81` + 交付状态 docs），工作区干净。
 > - 提交（英文 message、无 `Co-Authored-By`）：
 >   1. `388d9ea` `fix: gate indicator validity, date bounds and quote evidence` — WP1+WP2+WP3（35 文件，+1349/−178）
 >   2. `be0b55a` `feat: add immutable market-data snapshots with quality gating and export` — WP4（14 文件，+1846）
@@ -12,6 +12,11 @@
 >   6. `24ff6eb` `docs: record quant verifiability work, contracts and environment results` — 文档
 >   7. `43e41f2` `docs: record the final local verification results and delivery state` — 交付状态与实测记录
 >   8. `521b6c5` `fix: validate frozen payloads, gate engines and CI script exec bits` — 复核 R1–R5 修复（详见下方专段）
+>   9. `d6fa2d5` `docs: record the R1-R5 fix verification and Linux script probes` — 复核验证与 Linux 探针记录
+>  10. `eac1743` `docs: record the full offline suite green after the R1-R5 fixes` — 完整离线套件记录
+>  11. `591db90` `docs: record the local Docker E2E rerun of the CI docker-e2e script` — Docker E2E 本地重跑记录
+>  12. `c453b81` `feat: add daily_return engine with total and annualized return` — WP4 第二阶段回报率引擎
+>  13. `docs`（本条）：记录上述交付状态
 >
 > ### 本地验证结果（均为本机实跑）
 >
@@ -46,6 +51,13 @@
 > 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §11）：受影响集 **92 passed**（8.49s）、更广回归面（23 文件，`-m "not network"`）**292 passed**（10.39s）、**完整离线套件（整仓，非网络）1877 passed**（2 deselected，43 warnings，66.06s）、flake8（CI 同口径）**0 问题**、独立复现探针（复刻复核场景）**13 passed / 0 failed**、**Docker E2E（CI `docker-e2e` 同款脚本）14 项 `[PASS]` rc=0**、Linux 容器探针确认 tar 内文件为 `-rwxr-xr-x` 且 `bash -n` 通过（blob 无 CR，LF）。修复提交：`521b6c5`。
 >
 > 本轮**未改前端**：Web 快照卡片沿用上一轮已验证结果（47 文件 / 405 passed / 2 skipped），改动集中在后端契约与脚本。
+>
+> ## 第二阶段：`daily_return` 回报率引擎（2026-09-14，已提交：feat `c453b81`）
+>
+> 把 R3 的「显式拒绝未实现引擎」推进到真正实现：新增 `src/services/backtest_engine_registry.py`（`engine_kind → handler` 注册表 + `daily_return` 引擎），`BacktestService.run_backtest()` 改为「内置报告评估 + 注册表分派」；策略引擎必须引用 `input_eligibility=true` 且标的与 `code` 一致的快照，从冻结 bars 计算日频简单收益率序列、总回报率（`total_return`）与年化回报率（`annualized_return`，几何、252 交易日/年），证据 `snapshot.consumed=true` + `bars_consumed` + `metrics`，`code_sha256` 增加注册表模块。`api/v1/schemas/backtest.py` 的 `engine_kind` 描述同步。新增 `tests/test_daily_return_engine.py`（8 项）；`tests/test_backtest_snapshot_link.py` 的「未实现引擎被拒」改用真正未注册的 `factor_momentum`。
+>
+> 验证：受影响集（`test_daily_return_engine` + `test_backtest_snapshot_link` + `test_backtest_service`）**36 passed**；**完整离线套件 1885 passed / 2 deselected / 43 warnings / 65.09s / rc=0**（1877 + 8 新增）；flake8（CI 同口径 `--select=E9,F63,F7,F82`）**0 问题**；py_compile 通过。文档已同步（`quant-improvement-plan.md` §2/§85、`architecture/quant-verifiability-phase1.md`、`CHANGELOG.md`）。诚实边界：**仅算回报率**（含总回报率 `total_return` 与年化回报率 `annualized_return`），不建模资金/费用/滑点/持仓，不做组合/账户回测。本轮未改前端。
+
 
 
 > 下面是各工作包的原始完成说明，保留作为历史记录。
