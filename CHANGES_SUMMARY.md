@@ -2,7 +2,7 @@
 
 > ## 本分支交付状态（2026-09-14，本地分支，按你的要求**未开 PR**）
 >
-> - 分支：`feat/quant-verifiability-hardening`（已推送 origin；远端 `main` 未改动），本地共有 **13 个**提交（早先 6 个 + 本次 7 个），工作区干净。
+> - 分支：`feat/quant-verifiability-hardening`（已推送 origin；远端 `main` 未改动），本地共有 **14 个**提交（早先 6 个 + 上一批 7 个 + 本轮 R1–R5 修复 1 个），工作区干净。
 > - 提交（英文 message、无 `Co-Authored-By`）：
 >   1. `388d9ea` `fix: gate indicator validity, date bounds and quote evidence` — WP1+WP2+WP3（35 文件，+1349/−178）
 >   2. `be0b55a` `feat: add immutable market-data snapshots with quality gating and export` — WP4（14 文件，+1846）
@@ -10,7 +10,8 @@
 >   4. `edde47c` `chore: single-source agent skills and shrink the docker build context` — 治理 + Docker 上下文
 >   5. `6b24af1` `ci: add docker e2e job and run frontend unit tests in web-gate` — CI
 >   6. `24ff6eb` `docs: record quant verifiability work, contracts and environment results` — 文档
->   7. `43e41f2` `docs: record the final local verification results and delivery state` — 交付状态与实测记录（本轮 R1–R5 修订见下方专段）
+>   7. `43e41f2` `docs: record the final local verification results and delivery state` — 交付状态与实测记录
+>   8. `521b6c5` `fix: validate frozen payloads, gate engines and CI script exec bits` — 复核 R1–R5 修复（详见下方专段）
 >
 > ### 本地验证结果（均为本机实跑）
 >
@@ -42,7 +43,7 @@
 > | R4 P2 | 数据要求从 5 条提高到 100 条仍复用旧的合格状态 | `required_rows` 与 `SNAPSHOT_QC_VERSION` 一并进快照身份：提高要求会得到**新快照**并重新评估，两种创建顺序都有回归 |
 > | R5 P2 | `python scripts/export_market_snapshots.py --help` 报 `ModuleNotFoundError: No module named 'src'` | 按仓库脚本惯例引导仓库根目录；顺带修复在 Windows 下中文提示触发 `UnicodeEncodeError` 导致导出整体失败（这两个缺陷都由新增的子进程 CLI 测试抓出） |
 >
-> 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §9.5.2）：受影响集 **92 passed**、更广回归面 **374 passed**、flake8（CI 同口径）0 问题。
+> 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §11）：受影响集 **92 passed**（8.49s）、更广回归面（23 文件，`-m "not network"`）**292 passed**（10.39s）、flake8（CI 同口径）**0 问题**、独立复现探针（复刻复核场景）**13 passed / 0 failed**、Linux 容器探针确认 tar 内文件为 `-rwxr-xr-x` 且 `bash -n` 通过（blob 无 CR，LF）。修复提交：`521b6c5`。
 >
 > 本轮**未改前端**：Web 快照卡片沿用上一轮已验证结果（47 文件 / 405 passed / 2 skipped），改动集中在后端契约与脚本。
 

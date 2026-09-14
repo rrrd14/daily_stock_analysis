@@ -438,3 +438,45 @@ CHANGES_SUMMARY 仍有漂移：顶部写 6 个新提交和 13 项 Docker PASS，
 详细审查、确定性负例和 Linux 权限脚本位于本地忽略目录 `.claude/reviews/latest-review/`：`REVIEW.md`、`probe.py`、`probe-results.json`、`ci_mode_probe.py`。团队交接以本文为持久记录，忽略目录不会自动随 Git 分发。
 
 本轮未调用真实行情、付费 API 或 LLM，未做真实浏览器联调、全天调度、远端 CI 或生产部署。没有修改业务代码，仅追加审查/测试文档及本地产物。回滚只处理本轮文档增量，不重置用户提交。中文专项记录不新增英文副本，公共双语产品文档未改变。
+
+## 11. R1–R5 修复后复验（2026-09-14，commit 521b6c5）
+
+复核问题全部按 §10.3 的建议修复，本轮为**修复后**的独立复验（只改后端契约、脚本与文档；**未改前端**）。
+
+### 11.1 修复对应关系
+
+| # | 修复位置 | 关键行为 |
+| --- | --- | --- |
+| R1 | `scripts/docker_e2e.sh`（Git mode → `100755`）、`tests/test_ci_script_modes.py` | workflow 中每个 `./path/script` 调用在 Git 索引里必须是 `100755`；正则失效会显式失败而不是静默通过 |
+| R2 | `src/repositories/market_snapshot_repo.py`（`validate_bars()` + `assess_data_quality()` + `create()`） | 缺 OHLCV、NaN/Inf、日期非法/重复、价格关系不成立 → `unknown` 且 `input_eligibility=false`；覆盖改用**有效唯一交易日集合**（`quality.coverage.counted_sessions`，存储行数另记 `rows`） |
+| R3 | `src/services/backtest_service.py`、`api/v1/schemas/backtest.py` | 未实现 `engine_kind` 入口直接拒绝；报告评估的快照引用记为 `snapshot.consumed=false` 并在 `limitations` 写明「引用不等于消费」 |
+| R4 | `build_snapshot_id()`（新增 `required_rows` 与 `SNAPSHOT_QC_VERSION`） | 提高数据要求或升级规则版本都会得到新快照并重新评估，两种创建顺序都有回归 |
+| R5 | `scripts/export_market_snapshots.py`（根路径引导 + UTF-8 输出流）、导出测试新增子进程用例 | CLI 可直接按路径执行；Windows 下中文提示不再触发 `UnicodeEncodeError` 中断导出 |
+
+### 11.2 本轮命令与结果（本机实跑）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 受影响集（8 文件） | `pytest -q`（快照/导出/CI 权限/回测引用/回测服务） | **92 passed**，8.49s |
+| 更广回归面（23 文件） | `pytest -q -m "not network"` | **292 passed**，10.39s |
+| flake8（CI 同口径） | `python -m flake8 . --select=E9,F63,F7,F82` | **0 问题**，rc=0 |
+| 独立复现探针（复刻 §10.3 场景） | `python -X utf8 .claude/reviews/r1-r5-fix/probe.py` | **13 passed / 0 failed**，rc=0 |
+| 前端 | 未改动（沿用上一轮容器内结果） | 47 文件 / 405 passed / 2 skipped |
+
+独立探针关键输出：NaN 收盘 → `unknown` + `problems=["non_finite"]`；无价格 → `["missing_field"]`；重复日期 → `eligible=false`、`counted_sessions=2`（`deficit=1`）；干净输入仍 `verified`；`portfolio_daily` 被拒且旧引擎 `legacy_calls=0`；引用快照 `consumed=false`；未知 `snapshot_id` 仍被拒；`--help` 与导出均 rc=0（manifest `snapshots=1`、`hash_mismatches=[]`，payload 含冻结 id）；`docker_e2e.sh` 为 `100755`。
+
+### 11.3 Linux 侧权限与语法探针（容器）
+
+用 `stock-analysis:wp-verify` 作为 Linux/Bash 工具环境，`git archive` 的 tar 在容器内解压：
+
+- `-rwxr-xr-x ... /tmp/tree/scripts/docker_e2e.sh` → **`test -x` 通过**（Linux checkout 不会再得到 126）；
+- 仓库 blob 的 CR 计数为 **0**（`git ls-files --eol` 也是 `i/lf w/lf`）→ 内容为 LF，容器内 `bash -n` **通过**；
+- 说明：Windows 版 `git archive` 写出的 tar 会带上 CRLF（宿主行为），因此语法检查改用 `git cat-file blob` 导出的字节流副本；该差异不影响 CI 检出内容。
+
+### 11.4 未验证项与回滚
+
+- **未重跑完整离线套件**：本轮改用精确受影响集（92）+ 更广回归面（292）+ 独立探针（13）覆盖，未再跑全量；最近一次全量绿仍是改动前的 1834 passed。
+- 新增 CI 作业（`docker-e2e`）仍未在 GitHub Linux runner 上执行过；容器探针证明了权限与语法，但**未**在真实 runner 上跑完整 E2E（探针镜像内没有 docker，无法复现完整链路，也未捕获 `./script` 的直接退出码）。
+- 未做真实浏览器联调；`count_sessions` 仍以 fake calendar 做确定性测试。
+- 回滚：`git revert 521b6c5`（只影响后端契约、脚本权限、导出入口与文档；快照表结构未变，`SNAPSHOT_QC_VERSION` 只影响身份哈希，历史快照仍可读）。
+
