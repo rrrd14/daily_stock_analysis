@@ -7,7 +7,11 @@
 - ``snapshot_id`` 由「口径（复权/币种/单位/来源）+ 区间 + 内容哈希」共同决定，
   因此同源同区间但复权口径不同会得到**不同身份**。
 - ``payload_hash`` 使用稳定序列化（键排序、固定分隔符、拒绝 NaN/Infinity）。
-- 质量评估对未知口径一律判为不可用于默认策略收益计算，不把 unknown 提升为 verified。
+- 质量评估对未知口径一律判为不可用于默认策略收益计算，不把 unknown 提升为 verified；
+  冻结前还会逐行校验行情（OHLCV 缺失、NaN/Inf、日期非法或重复、价格关系不成立），
+  有问题的行不计入覆盖，且这类快照判为 unknown（价格不可用，不能只降级为 partial）。
+- 影响持久化资格的要求（``required_rows``）与质量规则版本（``SNAPSHOT_QC_VERSION``）
+  都进快照身份：更高的数据要求或规则升级会得到**新身份**，不会复用旧快照的布尔结论。
 - 覆盖判定分两层：首尾日期（必做）+ 交易日历 session 数（日历可用时）；日历不可用时
   ``quality["coverage"]["basis"]`` 会如实写 ``endpoints_only``，不伪装成已核对完整。
 """
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
@@ -38,6 +43,17 @@ SNAPSHOT_TOTAL_BUDGET_BYTES = 200 * 1024 * 1024
 PAYLOAD_COLUMNS = (
     "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
 )
+
+# 逐行校验（WP4 修订）：缺 OHLCV、NaN/Inf、日期非法或重复的行**不算有效交易日**，
+# 因而既不能填满覆盖判定，也不能取得默认策略资格。
+REQUIRED_BAR_COLUMNS = ("open", "high", "low", "close", "volume")
+PRICE_COLUMNS = ("open", "high", "low", "close")
+PAYLOAD_PROBLEMS = (
+    "invalid_date", "duplicate_date", "missing_field", "non_finite", "price_relation",
+)
+
+# 质量规则版本：判定规则变化时必须让身份随之变化，否则旧快照的布尔结论会被新请求复用。
+SNAPSHOT_QC_VERSION = "2"
 
 # 覆盖判定容忍度：请求区间端点与真实数据首尾相差在 10 个自然日内仍视为覆盖
 _COVERAGE_TOLERANCE_DAYS = 10
@@ -80,6 +96,72 @@ def normalize_bars(bars: Iterable[Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def validate_bars(
+    bars: Iterable[Any],
+    *,
+    requested_start: Optional[date] = None,
+    requested_end: Optional[date] = None,
+) -> Dict[str, Any]:
+    """冻结前逐行校验行情本身是否可用，并给出请求区间内的有效交易日集合。
+
+    问题分类：
+
+    - 日期无法解析 → ``invalid_date``；同一天出现多次 → ``duplicate_date``；
+    - 缺 OHLCV 任一字段 → ``missing_field``；NaN/Infinity/非数值 → ``non_finite``；
+    - 价格关系不成立（`high < low`，或 `open`/`close` 落在 `[low, high]` 之外）→ ``price_relation``。
+
+    只有**没有任何问题**的行才会进入 ``sessions``：坏行与重复行不能填满覆盖判定，
+    也不能让快照取得默认策略资格。``stable_json`` 把 NaN 转成 null 只是存储策略，
+    不代表数据通过校验。
+    """
+    problems: set = set()
+    sessions: set = set()
+    for bar in normalize_bars(bars):
+        try:
+            day = date.fromisoformat(str(bar.get("date"))[:10])
+        except (TypeError, ValueError):
+            problems.add("invalid_date")
+            continue
+        if requested_start is not None and day < requested_start:
+            continue
+        if requested_end is not None and day > requested_end:
+            continue
+
+        row_problems: set = set()
+        if day in sessions:
+            row_problems.add("duplicate_date")
+        prices: Dict[str, float] = {}
+        for column in REQUIRED_BAR_COLUMNS:
+            value = bar.get(column)
+            if value is None or value == "":
+                row_problems.add("missing_field")
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                row_problems.add("non_finite")
+                continue
+            if not math.isfinite(number):
+                row_problems.add("non_finite")
+                continue
+            prices[column] = number
+        if len(prices) == len(REQUIRED_BAR_COLUMNS):
+            low, high = prices["low"], prices["high"]
+            inside = low <= prices["open"] <= high and low <= prices["close"] <= high
+            if high < low or not inside:
+                row_problems.add("price_relation")
+
+        if row_problems:
+            problems |= row_problems
+        else:
+            sessions.add(day)
+
+    return {
+        "problems": [key for key in PAYLOAD_PROBLEMS if key in problems],
+        "sessions": sorted(sessions),
+    }
+
+
 def compute_coverage(
     actual_start: Optional[date],
     actual_end: Optional[date],
@@ -96,8 +178,11 @@ def compute_coverage(
     这样「缺失一段」的三年请求不会被标成完整三年。
 
     额外一层会话数校验：当日历可用（``expected_sessions`` 非 None）时，
-    真实行数显著少于区间应有 session 数也判为覆盖不足，用于抓「首尾齐全但中间
+    有效交易日数显著少于区间应有 session 数也判为覆盖不足，用于抓「首尾齐全但中间
     缺一大段」这种情况；容差见 ``SESSION_DEFICIT_TOLERANCE_RATIO``。
+
+    ``rows`` 由调用方传入**有效唯一交易日数**（见 ``validate_bars``），不是存储行数：
+    坏行与重复行不能用来凑满覆盖。
     """
     if requested_start is None or requested_end is None:
         return False
@@ -120,19 +205,23 @@ def describe_coverage(
     requested_end: Optional[date],
     rows: int,
     expected_sessions: Optional[int],
+    counted_sessions: Optional[int] = None,
 ) -> Dict[str, Any]:
     """覆盖判定的依据明细（供审计；不参与快照身份哈希）。
 
-    ``basis`` 明确区分「真的按交易日历核对过」与「只做了首尾日期判定」，
-    避免读者把缺少日历的情况误认为已核对完整。
+    ``rows`` 是存储行数，``counted_sessions`` 是**真正参与判定**的有效唯一交易日数
+    （坏行与重复行不计入）。``basis`` 明确区分「真的按交易日历核对过」与「只做了
+    首尾日期判定」，避免读者把缺少日历的情况误认为已核对完整。
     """
+    counted = int(rows) if counted_sessions is None else int(counted_sessions)
     deficit: Optional[int] = None
     if expected_sessions is not None:
-        deficit = max(int(expected_sessions) - int(rows), 0)
+        deficit = max(int(expected_sessions) - counted, 0)
     return {
         "basis": "trading_calendar" if expected_sessions is not None else "endpoints_only",
         "expected_sessions": expected_sessions,
         "rows": int(rows),
+        "counted_sessions": counted,
         "deficit": deficit,
         "requested_start": requested_start,
         "requested_end": requested_end,
@@ -146,11 +235,14 @@ def assess_data_quality(
     currency: Optional[str],
     volume_unit: Optional[str],
     coverage_complete: Optional[bool],
+    payload_problems: Iterable[str] = (),
 ) -> Dict[str, Any]:
-    """按「来源 / 复权 / 币种 / 单位 / 覆盖」判定质量与策略资格。
+    """按「来源 / 复权 / 币种 / 单位 / 覆盖 / 行情本身」判定质量与策略资格。
 
-    - 全部已知且覆盖完整 → ``verified``（可用于默认策略收益计算）
+    - 全部已知且覆盖完整、且行情行未发现缺陷 → ``verified``（可用于默认策略收益计算）
     - 来源或复权口径未知 → ``unknown``（不可用于任何收益口径计算）
+    - 行情行缺失字段、含 NaN/Inf、日期非法/重复或价格关系不成立 → ``unknown``
+      （这类数据连价格都不可用，不能只降级为「可研究」）
     - 仅币种/单位未知或覆盖不足 → ``partial``（可研究，需显式标注）
     """
     missing: List[str] = []
@@ -164,10 +256,15 @@ def assess_data_quality(
         missing.append("volume_unit")
     if coverage_complete is not True:
         missing.append("coverage")
+    for problem in payload_problems:
+        if problem not in missing:
+            missing.append(problem)
 
     if not missing:
         status = "verified"
-    elif "source" in missing or "price_adjustment" in missing:
+    elif "source" in missing or "price_adjustment" in missing or any(
+        problem in missing for problem in PAYLOAD_PROBLEMS
+    ):
         status = "unknown"
     else:
         status = "partial"
@@ -176,6 +273,7 @@ def assess_data_quality(
         "data_quality_status": status,
         "input_eligibility": status == "verified",
         "missing": missing,
+        "qc_version": SNAPSHOT_QC_VERSION,
     }
 
 
@@ -193,6 +291,7 @@ def build_snapshot_id(
     resolved_start: Optional[date],
     resolved_end: Optional[date],
     rows: int,
+    required_rows: Optional[int] = None,
     payload_hash: str,
 ) -> str:
     """由口径 + 区间 + 内容哈希派生的稳定身份（32 位十六进制）。"""
@@ -210,6 +309,10 @@ def build_snapshot_id(
         "resolved_start": resolved_start,
         "resolved_end": resolved_end,
         "rows": rows,
+        # 影响持久化资格的要求与规则版本必须进身份：否则更高的 required_rows、
+        # 或规则升级后的新判定，都会复用旧快照上的布尔结论。
+        "required_rows": required_rows,
+        "qc_version": SNAPSHOT_QC_VERSION,
         "payload_hash": payload_hash,
     }
     return hashlib.sha256(stable_json(identity).encode("utf-8")).hexdigest()[:32]
@@ -278,6 +381,15 @@ class MarketDataSnapshotRepository:
             )
         payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         actual_start, actual_end = self._resolve_range(bars)
+        payload_check = validate_bars(
+            bars,
+            requested_start=request.requested_start,
+            requested_end=request.requested_end,
+        )
+        sessions = payload_check["sessions"]
+        if sessions:
+            # 首尾也只取有效交易日：坏行不能决定「数据覆盖到哪里」。
+            actual_start, actual_end = sessions[0], sessions[-1]
         # 会话数只在日线且日历可用时参与判定；拿不到日历就如实退回首尾判定。
         expected_sessions = (
             count_sessions(request.market, request.requested_start, request.requested_end)
@@ -285,7 +397,7 @@ class MarketDataSnapshotRepository:
         )
         coverage = compute_coverage(
             actual_start, actual_end, request.requested_start, request.requested_end,
-            rows=len(bars), required_rows=request.required_rows,
+            rows=len(sessions), required_rows=request.required_rows,
             expected_sessions=expected_sessions,
         )
         quality = assess_data_quality(
@@ -294,11 +406,19 @@ class MarketDataSnapshotRepository:
             currency=request.currency,
             volume_unit=request.volume_unit,
             coverage_complete=coverage,
+            payload_problems=payload_check["problems"],
         )
+        quality["payload"] = {
+            "rows": len(bars),
+            "valid_sessions": len(sessions),
+            "problems": payload_check["problems"],
+            "qc_version": SNAPSHOT_QC_VERSION,
+        }
         quality["coverage"] = describe_coverage(
             requested_start=request.requested_start,
             requested_end=request.requested_end,
             rows=len(bars),
+            counted_sessions=len(sessions),
             expected_sessions=expected_sessions,
         )
         snapshot_id = build_snapshot_id(
@@ -314,6 +434,7 @@ class MarketDataSnapshotRepository:
             resolved_start=actual_start,
             resolved_end=actual_end,
             rows=len(bars),
+            required_rows=request.required_rows,
             payload_hash=payload_hash,
         )
         with self.db.get_session() as session:

@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """WP4 收尾回归：backtest_runs 引用冻结快照，并按引擎类型强制资格门槛。
 
-规则（见 docs/quant-improvement-plan.md WP4 与设计 §8）：
+规则（见 docs/quant-improvement-plan.md WP4 与设计 §8，R3 修订）：
 
-- 报告事后评估（`ai_report_evaluation`）允许探索性输入；提供快照时记录其质量。
-- 策略引擎（其它 `engine_kind`）**必须**引用 `input_eligibility=True` 的快照。
-- 未知名/不合格快照一律拒绝。
+- 只实现报告事后评估（`ai_report_evaluation`）；其它 `engine_kind` 一律被拒绝，
+  因为旧引擎并不消费冻结行情，换个标签会让运行记录与真实计算不符。
+- 报告评估可以附加 `snapshot_id` 作为**引用**（核对当时口径与质量），但证据里
+  写明 `consumed=false`：引用不等于消费。
+- 未知名/不存在的快照一律拒绝。
 """
 
 import unittest
@@ -54,44 +56,51 @@ class BacktestSnapshotLinkTestCase(unittest.TestCase):
         return self.service.run_backtest(**params)
 
     # ------------------------------------------------------------------
-    # 策略引擎必须引用合格快照
+    # 未实现引擎一律拒绝（不再允许「换个标签跑旧引擎」）
     # ------------------------------------------------------------------
-    def test_strategy_engine_requires_snapshot_id(self) -> None:
+    def test_unimplemented_engine_kind_is_rejected_without_snapshot(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self._run(engine_kind="portfolio_daily")
-        self.assertIn("requires an explicit eligible snapshot_id", str(ctx.exception))
+        self.assertIn("is not implemented", str(ctx.exception))
+        self.assertIn("portfolio_daily", str(ctx.exception))
 
-    def test_strategy_engine_rejects_ineligible_snapshot(self) -> None:
-        created = self._snapshot(volume_unit="unknown")
-        self.assertEqual(created["data_quality_status"], "partial")
-
-        with self.assertRaises(ValueError) as ctx:
-            self._run(engine_kind="portfolio_daily", snapshot_id=created["snapshot_id"])
-        self.assertIn("not eligible", str(ctx.exception))
-
-    def test_strategy_engine_accepts_eligible_snapshot_and_records_reference(self) -> None:
+    def test_unimplemented_engine_kind_is_rejected_even_with_eligible_snapshot(self) -> None:
         created = self._snapshot()
         self.assertTrue(created["input_eligibility"])
 
-        stats = self._run(engine_kind="portfolio_daily", snapshot_id=created["snapshot_id"])
+        with self.assertRaises(ValueError) as ctx:
+            self._run(engine_kind="portfolio_daily", snapshot_id=created["snapshot_id"])
+        self.assertIn("is not implemented", str(ctx.exception))
+
+    def test_rejected_engine_kind_does_not_write_a_run_record(self) -> None:
+        with self.assertRaises(ValueError):
+            self._run(engine_kind="portfolio_daily")
+
+        self.assertEqual(self.service.get_runs(), [])
+
+    def test_report_evaluation_records_reference_without_claiming_consumption(self) -> None:
+        created = self._snapshot()
+
+        stats = self._run(snapshot_id=created["snapshot_id"])
 
         record = self.service.get_run(stats["run_id"])
         self.assertEqual(record["snapshot_id"], created["snapshot_id"])
         self.assertEqual(record["data_quality_status"], "verified")
         self.assertIs(record["input_eligibility"], True)
-        self.assertEqual(record["engine_kind"], "portfolio_daily")
+        self.assertEqual(record["engine_kind"], "ai_report_evaluation")
         self.assertIsNotNone(record["engine_version"])
-        self.assertEqual(record["evidence"]["kind"], "portfolio_daily")
-        self.assertEqual(
-            record["evidence"]["snapshot"]["snapshot_id"], created["snapshot_id"]
-        )
+        self.assertEqual(record["evidence"]["kind"], "ai_report_evaluation")
+        snapshot_block = record["evidence"]["snapshot"]
+        self.assertEqual(snapshot_block["snapshot_id"], created["snapshot_id"])
+        self.assertIs(snapshot_block["consumed"], False)
+        self.assertTrue(any(
+            "not consumed" in limitation for limitation in record["evidence"]["limitations"]
+        ))
 
     def test_unknown_snapshot_id_is_rejected(self) -> None:
-        for engine_kind in ("ai_report_evaluation", "portfolio_daily"):
-            with self.subTest(engine_kind=engine_kind):
-                with self.assertRaises(ValueError) as ctx:
-                    self._run(engine_kind=engine_kind, snapshot_id="0" * 32)
-                self.assertIn("Unknown snapshot_id", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            self._run(snapshot_id="0" * 32)
+        self.assertIn("Unknown snapshot_id", str(ctx.exception))
 
     # ------------------------------------------------------------------
     # 报告评估保持向后兼容，但如实记录
@@ -120,7 +129,7 @@ class BacktestSnapshotLinkTestCase(unittest.TestCase):
         from api.v1.schemas.backtest import BacktestRunRecord
 
         created = self._snapshot()
-        stats = self._run(engine_kind="portfolio_daily", snapshot_id=created["snapshot_id"])
+        stats = self._run(snapshot_id=created["snapshot_id"])
         record = self.service.get_run(stats["run_id"])
 
         dumped = BacktestRunRecord.model_validate(record).model_dump()

@@ -15,6 +15,7 @@ import hashlib
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
+SCRIPT_PATH = SCRIPT_DIR / "export_market_snapshots.py"
+REPO_ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -157,6 +160,74 @@ class ExportSnapshotsTestCase(unittest.TestCase):
         roomy = export_tool.export_snapshots(self.repo, self.out_dir, limit=10)
         self.assertFalse(roomy["truncated"])
 
+
+
+class ExportCliProcessTestCase(unittest.TestCase):
+    """R5：按路径执行脚本必须能启动（不能依赖外部 PYTHONPATH）。
+
+    ``python scripts/export_market_snapshots.py`` 的 sys.path[0] 是 ``scripts/``，
+    这组用例在**清空 PYTHONPATH** 的子进程里跑，覆盖真实入口而不是只导入函数。
+    """
+
+    def _run(self, args, env_overrides=None, cwd=None):
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env.update(env_overrides or {})
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), *args],
+            cwd=str(cwd or REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+
+    def test_help_runs_without_pythonpath(self) -> None:
+        result = self._run(["--help"])
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("--out", result.stdout)
+
+    def test_export_runs_from_repo_root_and_writes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "snapshots.db"
+            out_dir = Path(tmp) / "exported"
+            self._seed_database(db_path)
+
+            result = self._run(
+                ["--out", str(out_dir), "--instrument", "588000"],
+                env_overrides={"DATABASE_PATH": str(db_path)},
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertTrue((out_dir / "snapshots.jsonl").is_file())
+            manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["snapshots"], 1)
+            self.assertEqual(manifest["hash_mismatches"], [])
+
+    @staticmethod
+    def _seed_database(db_path: Path) -> None:
+        """用与子进程相同的 DATABASE_PATH 建库并写入一份快照。"""
+        original = os.environ.get("DATABASE_PATH")
+        os.environ["DATABASE_PATH"] = str(db_path)
+        Config.reset_instance()
+        DatabaseManager.reset_instance()
+        try:
+            repo = MarketDataSnapshotRepository(DatabaseManager.get_instance())
+            repo.create(SnapshotRequest(
+                instrument="588000", market="cn", bars=_bars(START, 5),
+                source="TencentFetcher", price_adjustment="provider_default",
+                currency="CNY", volume_unit="shares",
+                requested_start=START, requested_end=START + timedelta(days=4),
+            ))
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            if original is None:
+                os.environ.pop("DATABASE_PATH", None)
+            else:
+                os.environ["DATABASE_PATH"] = original
 
 
 class ExportMainCliTestCase(unittest.TestCase):

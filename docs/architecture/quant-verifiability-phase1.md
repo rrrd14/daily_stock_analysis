@@ -36,18 +36,24 @@
 
 ## 冻结快照与覆盖判定依据（WP4）
 
-不可变快照表 `market_data_snapshots`（仓储 `src/repositories/market_snapshot_repo.py`，只增不改）保存每次研究的输入行情与口径：标的、市场、请求/解析区间、行数、来源、复权、币种、成交量单位、覆盖状态、质量等级与内容哈希。身份 = 口径 + 区间 + 内容哈希，因此同源不同复权是**不同**快照，不会互相冒充；同一份输入重复写入幂等且不覆盖既有记录，旧运行可重放。`backtest_runs` 记录 `snapshot_id` / `data_quality_status` / `input_eligibility` / `engine_kind` / `engine_version`。
+不可变快照表 `market_data_snapshots`（仓储 `src/repositories/market_snapshot_repo.py`，只增不改）保存每次研究的输入行情与口径：标的、市场、请求/解析区间、行数、来源、复权、币种、成交量单位、覆盖状态、质量等级与内容哈希。身份 = 口径 + 区间 + **数据要求（`required_rows`）** + **质量规则版本（`SNAPSHOT_QC_VERSION`）** + 内容哈希，因此同源不同复权是**不同**快照；把数据要求从 5 条提高到 100 条也会得到新身份并重新评估，而不是复用旧记录上的 `eligible`。同一份输入重复写入幂等且不覆盖既有记录，旧运行可重放。`backtest_runs` 记录 `snapshot_id` / `data_quality_status` / `input_eligibility` / `engine_kind` / `engine_version`。
 
-质量等级由 `assess_data_quality()` 判定：来源或复权未知 → `unknown`（不可用于任何收益口径计算）；仅币种/单位未知或覆盖不足 → `partial`；全部已知且覆盖完整 → `verified`。策略引擎（`engine_kind != ai_report_evaluation`）必须引用 `input_eligibility=True` 的快照，否则入口拒绝；报告事后评估保持原语义，并在提供快照时如实记录其质量。
+冻结前会逐行校验行情本身（`validate_bars`）：缺 OHLCV 任一字段、NaN/Infinity、日期无法解析或同一天重复、价格关系不成立（`high < low`，或 `open`/`close` 落在 `[low, high]` 之外）。有问题的行**不计入有效交易日集合**，因此既不能填满覆盖判定，也不能取得策略资格；`quality.payload.problems` 逐项列出问题。`stable_json` 把 NaN 转成 `null` 只是存储策略，不等于数据通过校验。
+
+质量等级由 `assess_data_quality()` 判定：来源或复权未知 → `unknown`（不可用于任何收益口径计算）；行情行存在上述缺陷 → 同样 `unknown`（价格都不可用，不能只降级为「可研究」）；仅币种/单位未知或覆盖不足 → `partial`；全部已知、覆盖完整且行情无缺陷 → `verified`。
+
+只实现报告事后评估引擎（`ai_report_evaluation`）。传入其它 `engine_kind` 会在入口直接抛错，不再「换个标签继续跑旧报告引擎」——旧引擎并不消费冻结行情，把运行结果标成组合/策略引擎会让记录与真实计算不符。报告评估仍可附加 `snapshot_id` 作为**引用**（核对当时口径与质量），但证据里写明 `snapshot.consumed=false` 并在 `limitations` 中说明：引用不等于消费。真正支持组合引擎时需按引擎注册表分派、从冻结 bars 计算、校验标的与区间口径。
 
 覆盖判定分两层，`quality.coverage.basis` 写明实际用了哪层：
 
 | basis | 触发条件 | 判定内容 |
 | --- | --- | --- |
-| `trading_calendar` | 日线且日历可用（`trading_calendar.count_sessions()` 返回非空） | 首尾落在请求区间内，**且**行数不少于应有 session 数的 90% |
+| `trading_calendar` | 日线且日历可用（`trading_calendar.count_sessions()` 返回非空） | 首尾落在请求区间内，**且有效交易日数**不少于应有 session 数的 90% |
 | `endpoints_only` | 日历不可用（未安装 `exchange-calendars`、市场未知、区间非法或超出日历范围） | 只比对首尾日期，各允许 10 个自然日偏差 |
 
-第二层用于抓「首尾齐全但中间缺一大段」——这类输入在只看首尾时会被误判为覆盖完整。日历取不到时退回首尾判定并**如实标注** `endpoints_only`，不会把「无法核对」写成「已核对完整」。10% 赤字容差用于吸收日历自身的节假日误差，不参与快照身份与幂等语义。预期区间未按「上市日期」收紧：仓库当前没有运行时上市日期来源，缺这类信息时判定只会更保守，不会放宽。
+两层都以**有效唯一交易日集合**为计数口径（`quality.coverage.counted_sessions`），存储行数另记在 `rows`：重复行与坏行不能凑满覆盖。
 
-导出与迁移：`python scripts/export_market_snapshots.py --out <dir> [--instrument CODE] [--limit N]` 生成 `snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览）。工具**只读**：不写入、不修改、不删除快照；内容哈希不匹配会点名该快照并以退出码 2 结束，被 `--limit` 截断时显式告警。
+第二层用于抓「首尾齐全但中间缺一大段」——这类输入在只看首尾时会被误判为覆盖完整。日历取不到时退回首尾判定并**如实标注** `endpoints_only`，不会把「无法核对」写成「已核对完整」。10% 赤字容差用于吸收日历自身的节假日误差。预期区间未按「上市日期」收紧：仓库当前没有运行时上市日期来源，缺这类信息时判定只会更保守，不会放宽。
+
+导出与迁移：`python scripts/export_market_snapshots.py --out <dir> [--instrument CODE] [--limit N]` 生成 `snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览）。脚本按仓库惯例自行引导根目录（可直接按路径执行、不依赖 `PYTHONPATH`），并把输出流切到 UTF-8（Windows 下中文提示不会因 `charmap` 编码中断导出）。工具**只读**：不写入、不修改、不删除快照；内容哈希不匹配会点名该快照并以退出码 2 结束，被 `--limit` 截断时显式告警。
 

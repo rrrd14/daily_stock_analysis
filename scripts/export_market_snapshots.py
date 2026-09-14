@@ -32,14 +32,21 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.repositories.backtest_run_repo import json_value
-from src.repositories.market_snapshot_repo import (
+# 以路径执行（``python scripts/export_market_snapshots.py``）时 sys.path[0] 是
+# ``scripts/``，仓库根目录并不在搜索路径里；沿用 fetch_tushare_stock_list.py 等
+# 脚本的做法显式引导，避免 `ModuleNotFoundError: No module named 'src'`。
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.repositories.backtest_run_repo import json_value  # noqa: E402
+from src.repositories.market_snapshot_repo import (  # noqa: E402
     SCHEMA_VERSION,
     MarketDataSnapshotRepository,
     normalize_bars,
     stable_json,
 )
-from src.time_utils import beijing_now
+from src.time_utils import beijing_now  # noqa: E402
 
 DEFAULT_LIMIT = 100
 EXPORT_SCHEMA_VERSION = "1"
@@ -124,7 +131,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_utf8_streams() -> None:
+    """把 CLI 输出切到 UTF-8。
+
+    Windows 控制台/重定向流的默认编码可能是 cp1252（charmap），此时任何中文提示
+    都会抛 ``UnicodeEncodeError`` 并让导出整体失败——即使数据已经正确写盘。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            continue
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    _ensure_utf8_streams()
     args = build_parser().parse_args(argv)
 
     from src.storage import DatabaseManager

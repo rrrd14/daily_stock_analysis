@@ -2,7 +2,7 @@
 
 > ## 本分支交付状态（2026-09-14，本地分支，按你的要求**未开 PR**）
 >
-> - 分支：`feat/quant-verifiability-hardening`（已推送到 origin；远端 `main` 未改动），本地共 6 个新提交，工作区干净。
+> - 分支：`feat/quant-verifiability-hardening`（已推送 origin；远端 `main` 未改动），本地共有 **13 个**提交（早先 6 个 + 本次 7 个），工作区干净。
 > - 提交（英文 message、无 `Co-Authored-By`）：
 >   1. `388d9ea` `fix: gate indicator validity, date bounds and quote evidence` — WP1+WP2+WP3（35 文件，+1349/−178）
 >   2. `be0b55a` `feat: add immutable market-data snapshots with quality gating and export` — WP4（14 文件，+1846）
@@ -10,6 +10,7 @@
 >   4. `edde47c` `chore: single-source agent skills and shrink the docker build context` — 治理 + Docker 上下文
 >   5. `6b24af1` `ci: add docker e2e job and run frontend unit tests in web-gate` — CI
 >   6. `24ff6eb` `docs: record quant verifiability work, contracts and environment results` — 文档
+>   7. `43e41f2` `docs: record the final local verification results and delivery state` — 交付状态与实测记录（本轮 R1–R5 修订见下方专段）
 >
 > ### 本地验证结果（均为本机实跑）
 >
@@ -19,16 +20,33 @@
 > | 快照 / 交易日历 / 导出 / 回测引用 | `pytest -q`（6 个文件） | **67 passed** |
 > | 受影响面（21 个文件，`-m "not network"`） | `pytest -q` | **274 passed** |
 > | 前端（Linux `node:20` 容器，与 CI `web-gate` 同环境） | `npm ci && npm run lint && npm run build && npm run test` | 全 rc=0；vitest **47 文件 / 405 passed / 2 skipped** |
-> | Docker E2E（真实镜像 + 非 root 运行） | `bash scripts/docker_e2e.sh` | **13 项断言全 PASS**：镜像内 `tsc -b`+vite 构建成功、`/api/health` 等只读接口全 200、首页引用的 `/assets/*` 存在、以 `dsa` 运行、`data/logs/reports` 在 UID/GID 1000 下可写、容器保持运行 |
+> | Docker E2E（真实镜像 + 非 root 运行） | `bash scripts/docker_e2e.sh` | **14 项断言全 PASS**：镜像内 `tsc -b`+vite 构建成功、`/api/health` 等只读接口全 200、首页引用的 `/assets/*` 存在、以 `dsa` 运行、`data/logs/reports` 在 UID/GID 1000 下可写、容器保持运行 |
 > | AI 资产治理 | `python scripts/sync_agent_skills.py --check` | OK（4 files in sync） |
 >
 > ### 未验证项（诚实声明）
 >
-> - **未在本地重跑完整离线套件**：本机终端会话本次极不稳定（命令时通时断、独立进程卡在 CPU=0），最近一次完整绿是本次改动**之前**的 1834 passed；本次改动只触及快照仓储 / 交易日历 / 前端，受影响面已由上述 274+67 覆盖，其余模块未被触及。
+> - **未在本地重跑完整离线套件**：本机终端会话本次极不稳定（命令时通时断、独立进程卡在 CPU=0），最近一次完整绿是本次改动**之前**的 1834 passed。**范围澄清**：本分支全量 diff 是 71 文件（含数据提供者、指标、任务、API 等），而**本轮 R1–R5 修订**只触及快照仓储、交易日历、回测服务、导出脚本、CI 权限与前端文案；这两者的验证记录已分别标明，勿相互代表。
 > - `scripts/check_ai_assets.py` 在 Windows 上会因 `CLAUDE.md` 软链被检出为普通文件而报错（git index 中为 `120000`，Linux 上是真软链，CI 可过）。
 > - 前端未做真实浏览器 + 后端联调；`count_sessions` 用 fake calendar 做确定性测试，**未**断言真实交易日历数据的准确性。
 > - CI 新增的两项（`docker-e2e` job、`web-gate` 加跑 `npm run test`）尚未在 GitHub Linux runner 上执行过；本次 e2e 属于 Windows/Docker Desktop 上的等价验证，R6 在真实 Linux runner（调用者 UID≠1000）下仍待证明。
 >
+> ## 独立复核（2026-09-14）与 R1–R5 修复
+>
+> 复核范围 `54ada83..43e41f2`（71 文件）：确认 WP1 评分保护、WP2 日期边界、WP3 报价证据确有改善，但指出 5 个**已复现**缺陷。复核原始结论见 `.claude/reviews/latest-review/REVIEW.md`；修复与验证如下。
+>
+> | # | 复核问题 | 修复 |
+> | --- | --- | --- |
+> | R1 P1 | `scripts/docker_e2e.sh` 的 Git mode 是 `100644`，CI 用 `./scripts/docker_e2e.sh`，Linux 下退出 **126** | 提交可执行位（`100755`）；新增 `tests/test_ci_script_modes.py`，校验 workflow 中每个 `./path/script` 调用在 Git 索引里都是 `100755`（正则失效时会显式失败而非静默通过） |
+> | R2 P1 | NaN、无价格、重复日期的行情仍获 `verified` 与策略资格 | 新增 `validate_bars()`：缺 OHLCV、NaN/Infinity、日期非法/重复、价格关系不成立 → `unknown` 且 `input_eligibility=false`；覆盖判定改用**有效唯一交易日集合**（`quality.coverage.counted_sessions`），坏行与重复行无法凑满覆盖 |
+> | R3 P1 | 接受 `portfolio_daily` 标签却仍调用旧报告引擎，未消费冻结行情 | 未实现的 `engine_kind` 在入口一律拒绝；报告评估仍可附加快照作为**引用**，但证据里写明 `snapshot.consumed=false` 并在 `limitations` 说明「引用不等于消费」 |
+> | R4 P2 | 数据要求从 5 条提高到 100 条仍复用旧的合格状态 | `required_rows` 与 `SNAPSHOT_QC_VERSION` 一并进快照身份：提高要求会得到**新快照**并重新评估，两种创建顺序都有回归 |
+> | R5 P2 | `python scripts/export_market_snapshots.py --help` 报 `ModuleNotFoundError: No module named 'src'` | 按仓库脚本惯例引导仓库根目录；顺带修复在 Windows 下中文提示触发 `UnicodeEncodeError` 导致导出整体失败（这两个缺陷都由新增的子进程 CLI 测试抓出） |
+>
+> 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §9.5.2）：受影响集 **92 passed**、更广回归面 **374 passed**、flake8（CI 同口径）0 问题。
+>
+> 本轮**未改前端**：Web 快照卡片沿用上一轮已验证结果（47 文件 / 405 passed / 2 skipped），改动集中在后端契约与脚本。
+
+
 > 下面是各工作包的原始完成说明，保留作为历史记录。
 >
 

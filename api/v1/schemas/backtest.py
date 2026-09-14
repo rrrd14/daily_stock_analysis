@@ -43,7 +43,9 @@ class BacktestRunRecord(BaseModel):
         None, description="该快照是否满足默认策略收益计算的数据资格"
     )
     engine_kind: Optional[str] = Field(
-        None, description="引擎类型：ai_report_evaluation / portfolio_daily 等"
+        None,
+        description="引擎类型；当前只实现 ai_report_evaluation（报告事后评估），"
+                    "传入其它名称会被拒绝",
     )
     engine_version: Optional[str] = Field(None, description="引擎版本")
 

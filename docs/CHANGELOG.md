@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 补充 43e41f2 独立审查与全量测试证据，记录快照质量/资格复用、引擎输入引用、导出入口和 Linux CI 执行权限的已复现问题；本条不代表问题已修复。
+
 - [文档] 新增本地环境与 Docker 实测记录，列出依赖准备、Web/回测证据/三时区验证、UID 权限负例、在线行情返回及未验证边界。
 
 - [文档] 基于当前提交与工作区重新审查量化前置能力，新增修订改进计划与数据/北京时间契约设计，明确阶段1.1待办，并更正“全链路时区已统一”的过度表述；计划中的修复尚未实现。
@@ -79,6 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增快照导出工具 `scripts/export_market_snapshots.py`：导出 `<out>/snapshots.jsonl`（元数据 + 冻结行情行）与 `manifest.json`（条数、文件 SHA256、逐份 payload 哈希核对、体积概览），支持 `--instrument` / `--limit`；**只读**（不写入/修改/删除快照），内容哈希不匹配时点名并返回退出码 2，被 `--limit` 截断时显式告警，序列化复用仓库统一稳定序列化（日期归一、拒绝 NaN/Infinity）。
 - [改进] Web 快照区块展示覆盖判定依据：区分「已按交易日历核对区间 session 数（应有 N 个，缺口 M 个）」与「仅比对首尾日期（日历不可用，区间内 session 数未核对）」，避免把首尾判定读成完整核对。
 - [测试] 新增 `tests/test_market_snapshot_session_coverage.py`（17 项）与 `tests/test_export_market_snapshots.py`（7 项）：日历缺失/市场未知/区间非法/日历异常均返回 `None`、大段缺失被拦、容差边界、覆盖依据可审计、导出计数与文件哈希、篡改点名、导出只读、标的过滤、`--limit` 截断与 CLI 退出码；Web `BacktestRunCard` 回归再 +2 项（日历核对 vs 仅首尾）。
+- [修复] CI 直接执行的 `scripts/docker_e2e.sh` 缺少可执行位（Git mode `100644`），Linux 下按 CI 命令运行会以 **126** 退出且不进入脚本体；现提交为 `100755`，并新增 `tests/test_ci_script_modes.py` 锁定「workflow 中 `./path/script` 调用的脚本必须是 `100755`」。
+- [修复] 冻结前逐行校验行情：缺 OHLCV、NaN/Infinity、日期非法或重复、价格关系不成立的输入不再获得 `verified` 与策略输入资格（判为 `unknown`）；坏行与重复行也不再计入覆盖判定——覆盖改用请求区间内的**有效唯一交易日集合**，`quality.coverage.counted_sessions` 与 `quality.payload.problems` 可逐项核对。
+- [修复] 快照身份纳入「影响资格的要求」与质量规则版本：`required_rows` 与 `SNAPSHOT_QC_VERSION` 现在参与 `snapshot_id`，因此把数据要求从 5 条提高到 100 条会得到**新快照**并如实判为不合格，而不是复用旧的 `eligible` 结论（两种创建顺序都有回归）。
+- [修复] 未实现的引擎类型改为显式拒绝：`engine_kind != ai_report_evaluation` 一律在入口抛错，不再「换个标签跑旧报告引擎」；运行证据的 `snapshot` 块新增 `consumed=false`，并在 `limitations` 中写明引用不等于消费。
+- [修复] 快照导出 CLI 可直接运行：`scripts/export_market_snapshots.py` 按仓库脚本惯例引导仓库根目录（不再 `ModuleNotFoundError: No module named 'src'`），并把 stdout/stderr 切到 UTF-8（避免 Windows 下中文提示触发 `UnicodeEncodeError` 导致导出整体失败）。
+- [测试] 新增 `tests/test_market_snapshot_payload_quality.py`（15 项）与 `tests/test_ci_script_modes.py`（1 项）；`tests/test_export_market_snapshots.py` 扩到 9 项（新增清空 `PYTHONPATH` 的子进程 `--help` 与导出 smoke）；`tests/test_backtest_snapshot_link.py` 改为断言未实现引擎被拒绝、引用记录 `consumed=false`。
+
+
 - [chore] CI 新增 `docker-e2e` job：在真实 Linux runner 上构建镜像并验证可启动、只读接口可用、前端静态产物存在、以非 root 用户运行且 `data/logs/reports` 可写（R6）；同时 `web-gate` 新增 `npm run test`，使仓库内 47 个前端单测文件首次进入阻断链路。
 
 

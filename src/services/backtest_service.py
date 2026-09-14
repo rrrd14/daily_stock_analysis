@@ -18,10 +18,7 @@ from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.backtest_run_repo import BacktestRunRepository, json_value
-from src.repositories.market_snapshot_repo import (
-    MarketDataSnapshotRepository,
-    ensure_input_eligible,
-)
+from src.repositories.market_snapshot_repo import MarketDataSnapshotRepository
 from src.repositories.stock_repo import StockRepository
 from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager
 
@@ -39,6 +36,9 @@ class BacktestService:
         self.stock_repo = StockRepository(self.db)
 
     ENGINE_KIND_REPORT_EVALUATION = "ai_report_evaluation"
+    # 只有报告事后评估真正实现；其它引擎名一律拒绝，避免把旧引擎的运行结果
+    # 标成组合/策略引擎，也避免「只记录 snapshot_id」被读成「消费了冻结行情」。
+    IMPLEMENTED_ENGINE_KINDS = (ENGINE_KIND_REPORT_EVALUATION,)
 
     def run_backtest(
         self, *, code=None, force=False, eval_window_days=None, min_age_days=None, limit=200,
@@ -47,14 +47,22 @@ class BacktestService:
     ) -> Dict[str, Any]:
         """Record the inputs actually evaluated; never infer execution from a rollup.
 
-        快照门槛（WP4）：
+        引擎门槛（WP4 修订）：
 
-        - ``engine_kind == "ai_report_evaluation"``（默认）：报告事后评估，允许探索性
-          输入；若提供 ``snapshot_id`` 则记录其质量与资格，但不拒绝不合格快照。
-        - 其它 ``engine_kind``（策略引擎）：**必须**提供 ``snapshot_id`` 且该快照
-          必须 ``input_eligibility == True``，否则直接拒绝，避免用 unknown/partial
-          数据产出可执行收益口径。
+        - 只实现 ``ai_report_evaluation``（报告事后评估）。传入其它 ``engine_kind``
+          一律直接拒绝：旧引擎没有消费冻结行情，把它标成组合/策略引擎会让运行记录
+          与真实计算不符。
+        - 报告评估仍可附加 ``snapshot_id`` 作为**引用**（用于核对当时的口径与质量），
+          但证据里会写明 ``consumed=false``：报告引擎读取的是数据库/抓取路径，
+          不是该快照的 bars。
+        - 未知名/不存在的 ``snapshot_id`` 仍会被拒绝。
         """
+        if engine_kind not in self.IMPLEMENTED_ENGINE_KINDS:
+            raise ValueError(
+                f"engine_kind={engine_kind!r} is not implemented; refusing to label the "
+                "report evaluation engine as another engine. Implemented: "
+                f"{', '.join(self.IMPLEMENTED_ENGINE_KINDS)}"
+            )
         config = get_config()
         params = {
             "code": code, "force": force, "limit": int(limit),
@@ -68,9 +76,7 @@ class BacktestService:
             "neutral_band_pct": float(getattr(config, "backtest_neutral_band_pct", 2.0)),
         }
 
-        snapshot_ref = self._resolve_snapshot_reference(
-            snapshot_id=snapshot_id, engine_kind=engine_kind,
-        )
+        snapshot_ref = self._resolve_snapshot_reference(snapshot_id=snapshot_id)
         evidence = {
             "schema_version": 1, "kind": engine_kind,
             "parameters": {**params, **engine_settings},
@@ -87,7 +93,13 @@ class BacktestService:
                 "data_quality_status": snapshot_ref["data_quality_status"],
                 "input_eligibility": snapshot_ref["input_eligibility"],
                 "coverage_complete": snapshot_ref["coverage_complete"],
+                # 引用只用于核对当时的口径与质量；报告评估引擎不读取冻结 bars。
+                "consumed": False,
             }
+            evidence["limitations"].append(
+                "The referenced snapshot was not consumed by this engine; it records the "
+                "input quality of the run, it does not prove the frozen bars were used."
+            )
         run_id = uuid4().hex
         runs = BacktestRunRepository(self.db)
         runs.create(
@@ -119,20 +131,17 @@ class BacktestService:
     def get_runs(self):
         return BacktestRunRepository(self.db).recent()
 
-    def _resolve_snapshot_reference(self, *, snapshot_id, engine_kind):
-        """解析并校验快照引用；策略引擎必须使用合格快照。"""
-        is_strategy_engine = engine_kind != self.ENGINE_KIND_REPORT_EVALUATION
+    def _resolve_snapshot_reference(self, *, snapshot_id):
+        """解析并校验快照引用。
+
+        只校验存在性：引用（用于核对当时口径与质量）**不等于消费**。真正消费冻结
+        行情需要引擎从 snapshot 的 bars 计算，目前只有报告评估引擎，且它不消费。
+        """
         if snapshot_id is None:
-            if is_strategy_engine:
-                raise ValueError(
-                    f"engine_kind={engine_kind} requires an explicit eligible snapshot_id"
-                )
             return None
         snapshot = MarketDataSnapshotRepository(self.db).get(snapshot_id)
         if snapshot is None:
             raise ValueError(f"Unknown snapshot_id: {snapshot_id}")
-        if is_strategy_engine:
-            ensure_input_eligible(snapshot)
         return snapshot
 
     @staticmethod

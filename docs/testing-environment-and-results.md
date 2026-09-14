@@ -1,5 +1,7 @@
 # 本地环境与 Docker 测试记录
 
+> 最新独立复核：见本文 §10（HEAD `43e41f2`）。历史 PASS 记录保留，但新增快照门槛和 CI 调用仍有已复现问题。
+
 记录日期：**2026-09-14，北京时间（Asia/Shanghai，UTC+08:00）**。宿主机当时仍是洛杉矶时间 2026-09-13，本文所有业务日期均以北京时间为准。
 
 本文记录本次代码 review 使用的环境、前一轮离线测试，以及 Docker 恢复后补跑的实际结果。用于复现与交接，不代表生产环境验收完成。
@@ -379,3 +381,60 @@ bash scripts/docker_e2e.sh
 - 仍为**离线确定性**验证：不验证第三方行情真实性、模型回答正确性或目标服务器在线可用性。
 - 未覆盖跨北京时间午夜、周末、节假日与美股夏令时的端到端场景（属计划 WP5 的测试矩阵）。
 - 第 5.4 节的 Linux UID 权限负例（**R6 已修复**）：`scripts/docker_e2e.sh` 不再使用调用者创建的 bind mount 目录，改为 Docker 命名卷并在启动前以 root 显式把属主初始化为 `1000:1000`，同时把可写校验扩展到 `data/logs/reports` 三个目录。本轮在 Windows/Docker Desktop 上复跑通过；**尚未在真实 Linux runner（UID≠1000）上执行**，因此「Linux CI 上一定通过」仍未被直接证明。
+
+## 10. HEAD 43e41f2 独立复核（2026-09-14 12:26，北京时间）
+
+审查范围 `54ada83..43e41f2`，7 个新提交、71 个文件。开始时 Git 可见工作区干净。以下是本次独立实测，不与上面的历史验证混成一次运行。
+
+### 10.1 本轮结果
+
+| 检查 | 结果 | 边界 |
+|---|---|---|
+| 完整离线后端 | **1858 passed，2 deselected，42 warnings，60.14 秒** | 本地 Python 3.12.14 |
+| Web 单测 | **47 文件通过，405 passed，2 skipped，10.53 秒** | 本地 Node 24，已安装依赖 |
+| Web tsc + Vite build | 通过，3180 modules | 有大包与 Browserslist 陈旧提示 |
+| 旧评分/日期/报价探针 | 修复有效 | mock 数据，非在线行情 |
+| 新快照负例 | 复现无效输入仍 verified | NaN、无价格、重复日期 |
+| required_rows 提高 | 仍复用旧 eligible=true | 5 条要求提高到 100 条 |
+| 新引擎分派 | 仍调用旧报告引擎 | 接受不同标的快照并记录 portfolio_daily |
+| Linux CI 启动权限 | **退出 126，Permission denied** | Git mode 0644；CI 直接执行 |
+| 导出 CLI --help | **退出 1，ModuleNotFoundError: src** | 无额外 PYTHONPATH |
+| sync_agent_skills --check | OK，4 files in sync | 本地检查 |
+| check_ai_assets | Windows CLAUDE.md 非软链，失败 | 不推断 Linux 同样失败 |
+
+### 10.2 环境与复现
+
+完整 pytest 首次被旧 `.pytest_cache` 和两个 `pytest-cache-files-*` 目录权限阻断，发生在收集阶段。没有删除或修改它们，仅排除缓存并指定可写 cache_dir 后，全量通过：
+
+```powershell
+.venv/Scripts/python.exe -m pytest -m 'not network' -q --disable-warnings --ignore=.pytest_cache --ignore-glob='pytest-cache-files-*' -o cache_dir=.claude/reviews/latest-review/pytest-cache
+```
+
+前端在 `apps/dsa-web` 沿用 §3 的临时 npm CLI：
+
+```powershell
+node ../../.claude/reviews/npm-runtime/package/bin/npm-cli.js test
+node ../../.claude/reviews/npm-runtime/package/bin/npm-cli.js run build
+```
+
+本轮没有重新 npm ci、lint 或构建业务镜像，不将上述结果称为完整 CI 绿灯。
+
+Linux 权限探针使用已有 `stock-analysis:wp-verify` 作为 Bash/Python 环境；输入当前 HEAD 的 `git archive`，保留脚本 0644 权限，执行 CI 同款 `./scripts/docker_e2e.sh`，退出 126。没有进入 E2E 脚本体，不涉及宿主 UID，也不否定此前 `bash scripts/docker_e2e.sh` 的成功；两种调用方式不同。隔离容器 --rm 自动清理。
+
+### 10.3 已复现问题与建议
+
+1. **P1，CI 入口：** `.github/workflows/ci.yml:112` 直接执行 Git mode 100644 的脚本。应使用 bash 或提交 executable bit，并验证干净 checkout。
+2. **P1，快照质量：** `market_snapshot_repo.py:270` 开始的创建路径没有验证必需价格、非有限值和唯一日期；以原始行数判断覆盖。NaN 收盘价、完全无价格、重复日期三组均取得 verified / input_eligibility=true。应按合法字段和请求区间内有效唯一 session 核验；存储时将 NaN 转 null 不能代替质量校验。
+3. **P1，执行证据：** `backtest_service.py:102` 接受 portfolio_daily 和快照引用后仍调用旧报告引擎，未把冻结 bars 传给计算，也未校验标的一致。应拒绝未实现引擎，并在实现后绑定实际输入。普通 HTTP run 入口尚未暴露这两个参数，漏洞首先位于新增服务层。分派探针使用 mock 引擎返回，不是一次实际收益回测。
+4. **P2，资格复用：** required_rows 影响质量却未进入评估身份；同样 5 条数据先按 5 条创建，再要求 100 条，仍取回原合格状态。应把资格与本次运行要求/质量规则版本绑定，不能通用地复用首次布尔值。
+5. **P2，导出入口：** 根目录执行 `python scripts/export_market_snapshots.py --help` 无法导入 src。函数测试未覆盖子进程入口；应修正启动方式并补无 PYTHONPATH 的 CLI smoke。
+
+旧问题复测：缺指标由 77 分强买变为 54 分持有且保留风险；价格缺口下 MACD/RSI 不再给出有效数值；历史目标日后的数据被裁剪；报价 payload 保留 stale、源时间及字段来源。旧修复有实质效果，新增门槛仍需补强。
+
+CHANGES_SUMMARY 仍有漂移：顶部写 6 个新提交和 13 项 Docker PASS，正文 HEAD 写 24ff6eb；实际为 43e41f2、7 个新提交、相对 f76e8c7 共 13 个提交。§9.5.1 的 14 项 PASS 不覆盖本次 CI 调用负例。本轮只记录差异，没有改写用户历史交付声明。
+
+### 10.4 交付边界
+
+详细审查、确定性负例和 Linux 权限脚本位于本地忽略目录 `.claude/reviews/latest-review/`：`REVIEW.md`、`probe.py`、`probe-results.json`、`ci_mode_probe.py`。团队交接以本文为持久记录，忽略目录不会自动随 Git 分发。
+
+本轮未调用真实行情、付费 API 或 LLM，未做真实浏览器联调、全天调度、远端 CI 或生产部署。没有修改业务代码，仅追加审查/测试文档及本地产物。回滚只处理本轮文档增量，不重置用户提交。中文专项记录不新增英文副本，公共双语产品文档未改变。
