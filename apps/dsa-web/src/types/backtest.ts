@@ -30,6 +30,17 @@ export interface BacktestRunRecord {
   created_at: string;
   finished_at?: string | null;
   sha256?: string | null;
+  /**
+   * 冻结快照引用（WP4）。报告评估（ai_report_evaluation）可以没有快照；
+   * 其它策略引擎在服务端必须引用合格快照，否则入口会直接拒绝。
+   */
+  snapshot_id?: string | null;
+  /** 快照质量等级：verified / partial / unknown */
+  data_quality_status?: string | null;
+  /** 该快照是否满足默认策略收益计算的输入资格 */
+  input_eligibility?: boolean | null;
+  engine_kind?: string | null;
+  engine_version?: string | null;
   evidence?: {
     kind: string;
     parameters: Record<string, unknown>;
@@ -45,6 +56,45 @@ export interface BacktestRunRecord {
       result: { eval_status: string };
     }>;
   };
+}
+
+// ============ Frozen Market Snapshot (WP4) ============
+
+/** 冻结行情快照的只读视图（`bars` 仅在 include_bars=true 时返回）。 */
+export interface MarketSnapshotRecord {
+  snapshot_id: string;
+  schema_version?: string | null;
+  instrument: string;
+  market?: string | null;
+  interval?: string | null;
+  requested_start?: string | null;
+  requested_end?: string | null;
+  resolved_start?: string | null;
+  resolved_end?: string | null;
+  rows?: number | null;
+  source?: string | null;
+  price_adjustment?: string | null;
+  currency?: string | null;
+  volume_unit?: string | null;
+  coverage_complete?: boolean | null;
+  data_quality_status?: string | null;
+  input_eligibility?: boolean | null;
+  /**
+   * 质量评估明细：`missing` 为缺失的口径/覆盖项，
+   * `coverage` 说明覆盖判定依据（是否真的按交易日历核对过）。
+   */
+  quality?: {
+    missing?: string[];
+    coverage?: {
+      /** trading_calendar = 已按交易日历核对 session 数；endpoints_only = 只比对首尾日期 */
+      basis?: string;
+      expected_sessions?: number | null;
+      rows?: number | null;
+      deficit?: number | null;
+    } | null;
+  } | null;
+  payload_hash?: string | null;
+  created_at?: string | null;
 }
 
 // ============ Result Item ============

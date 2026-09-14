@@ -6,6 +6,7 @@ import type {
   BacktestRunResponse,
   BacktestResultsResponse,
   BacktestResultItem,
+  MarketSnapshotRecord,
   PerformanceMetrics,
 } from '../types/backtest';
 
@@ -18,6 +19,18 @@ export const backtestApi = {
   },
   getRuns: async (): Promise<BacktestRunRecord[]> => {
     const response = await apiClient.get<BacktestRunRecord[]>('/api/v1/backtest/runs');
+    return response.data;
+  },
+  /**
+   * Read the frozen market snapshot a run referenced.
+   *
+   * 返回服务端原始 snake_case 字段：卡片只做展示、不做字段重写，
+   * 以免与 `evidence` 中记录的口径信息不一致。
+   */
+  getMarketSnapshot: async (snapshotId: string): Promise<MarketSnapshotRecord> => {
+    const response = await apiClient.get<MarketSnapshotRecord>(
+      `/api/v1/backtest/snapshots/${encodeURIComponent(snapshotId)}`,
+    );
     return response.data;
   },
   /**
