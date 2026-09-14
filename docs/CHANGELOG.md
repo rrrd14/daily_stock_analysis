@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 补充量化信号独立页面交互与数据源请求保护设计，区分规则计算、行情刷新及AI解释，规定共享上游预算、缓存、退避和冷却；尚未实现。
+
+- [文档] 基于 f0abe52 复核收益引擎与上轮修复，修订后续范围为无模型依赖的快速规则信号、按需解释与单标的事件评估；新增详细设计，移除 portfolio/账户回测实施计划，设计尚未实现。
+
 - [新功能] 实现 `daily_return` 回报率引擎（WP4 第二阶段）：按 `src/services/backtest_engine_registry.py` 注册表分派，必须引用 `input_eligibility=true` 且标的与请求 `code` 一致的快照，从冻结 bars 计算日频简单收益率序列、总回报率（`total_return`）与年化回报率（`annualized_return`，几何、252 交易日/年），证据里 `snapshot.consumed=true` 并记录 `bars_consumed`/`metrics`；未注册的 `engine_kind` 仍被拒绝。诚实边界：仅算回报率，不建模资金/费用/滑点/持仓，不做组合/账户回测。新增 `tests/test_daily_return_engine.py`（8 项）。
 
 - [文档] 补充 43e41f2 独立审查与全量测试证据，记录快照质量/资格复用、引擎输入引用、导出入口和 Linux CI 执行权限的已复现问题；本条不代表问题已修复。
