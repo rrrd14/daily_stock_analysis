@@ -43,7 +43,7 @@
 > | R4 P2 | 数据要求从 5 条提高到 100 条仍复用旧的合格状态 | `required_rows` 与 `SNAPSHOT_QC_VERSION` 一并进快照身份：提高要求会得到**新快照**并重新评估，两种创建顺序都有回归 |
 > | R5 P2 | `python scripts/export_market_snapshots.py --help` 报 `ModuleNotFoundError: No module named 'src'` | 按仓库脚本惯例引导仓库根目录；顺带修复在 Windows 下中文提示触发 `UnicodeEncodeError` 导致导出整体失败（这两个缺陷都由新增的子进程 CLI 测试抓出） |
 >
-> 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §11）：受影响集 **92 passed**（8.49s）、更广回归面（23 文件，`-m "not network"`）**292 passed**（10.39s）、**完整离线套件（整仓，非网络）1877 passed**（2 deselected，43 warnings，66.06s）、flake8（CI 同口径）**0 问题**、独立复现探针（复刻复核场景）**13 passed / 0 failed**、Linux 容器探针确认 tar 内文件为 `-rwxr-xr-x` 且 `bash -n` 通过（blob 无 CR，LF）。修复提交：`521b6c5`。
+> 本轮修复的验证（本机实跑，详见 `docs/testing-environment-and-results.md` §11）：受影响集 **92 passed**（8.49s）、更广回归面（23 文件，`-m "not network"`）**292 passed**（10.39s）、**完整离线套件（整仓，非网络）1877 passed**（2 deselected，43 warnings，66.06s）、flake8（CI 同口径）**0 问题**、独立复现探针（复刻复核场景）**13 passed / 0 failed**、**Docker E2E（CI `docker-e2e` 同款脚本）14 项 `[PASS]` rc=0**、Linux 容器探针确认 tar 内文件为 `-rwxr-xr-x` 且 `bash -n` 通过（blob 无 CR，LF）。修复提交：`521b6c5`。
 >
 > 本轮**未改前端**：Web 快照卡片沿用上一轮已验证结果（47 文件 / 405 passed / 2 skipped），改动集中在后端契约与脚本。
 
