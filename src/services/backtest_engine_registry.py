@@ -105,8 +105,14 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
 
     诚实边界：只消费冻结 bars 的收盘价，不建模资金 / 费用 / 滑点 / 持仓——这是
     「算回报率」的引擎，不是组合 / 账户回测，也不产出可交易净值曲线。
+    执行时按**当前** QC 规则复检「实际消费」的区间内数据，不信任旧快照存下来的
+    资格布尔值（QC 升级后旧快照可能仍带 eligible=true）。
     """
-    from src.repositories.market_snapshot_repo import MarketDataSnapshotRepository
+    from src.repositories.market_snapshot_repo import (
+        SNAPSHOT_QC_VERSION,
+        MarketDataSnapshotRepository,
+        validate_bars,
+    )
 
     if code is not None and str(snapshot["instrument"]) != str(code):
         raise ValueError(
@@ -125,6 +131,10 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
         requested_start=snapshot.get("requested_start"),
         requested_end=snapshot.get("requested_end"),
     )
+    # 复检：按当前 QC 规则重新校验「实际消费」的区间内数据，不信任旧快照在旧版
+    # 规则下写入的资格布尔值（QC 升级后旧快照仍可能带 eligible=true）。
+    revalidation_problems = validate_bars(bars)["problems"]
+
     observations, closes = _daily_returns_from_bars(bars)
 
     first_close = closes[0][1] if closes else None
@@ -145,6 +155,9 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
     evidence["snapshot"]["consumed"] = True
     evidence["snapshot"]["bars_consumed"] = len(bars)
     evidence["snapshot"]["bars_out_of_range"] = bars_out_of_range
+    evidence["snapshot"]["revalidated"] = True
+    evidence["snapshot"]["revalidation_qc_version"] = SNAPSHOT_QC_VERSION
+    evidence["snapshot"]["revalidation_problems"] = revalidation_problems
     evidence["items"] = observations
     evidence["metrics"] = {
         "bars": len(bars),
@@ -155,6 +168,7 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
         "total_return": total_return,
         "annualized_return": annualized_return,
         "periods_per_year": 252.0,
+        "revalidation_problems": revalidation_problems,
     }
     evidence["limitations"] = [
         "Daily return engine consumes the frozen snapshot, but does not model "
@@ -163,6 +177,15 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
         "annualized_return is geometric, assumes 252 trading days/year and one "
         "observation per trading day; it does not adjust for gaps in the series.",
     ]
+    if revalidation_problems:
+        # 复检发现当前规则下的问题（如旧快照含零价格）：不宣称 completed，证据已如实记录。
+        return {
+            "processed": len(bars),
+            "saved": 0,
+            "completed": 0,
+            "insufficient": 1,
+            "errors": 0,
+        }
     processed = len(observations)
     return {
         "processed": processed,

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] `daily_return` 引擎执行时按**当前** QC 规则复检「实际消费」的区间内数据，并把复检结果写入本次运行证据（`snapshot.revalidated` / `revalidation_qc_version` / `revalidation_problems`）；复检发现问题（如旧 QC 版本快照含零价格、仍带 `input_eligibility=true`）时判为 `insufficient` 而非 `completed`，不再信任旧快照存下来的资格布尔值。
+
+- [测试] 新增回归：旧资格快照复检拦截、HTTP 端到端转发 `engine_kind`/`snapshot_id` 与 422 拒绝、Web `daily_return` 独立渲染。
+
+- [修复] `daily_return` 引擎把收益计算绑定到请求区间：只消费快照 `requested_start`~`requested_end` 内的 bars，区间外行只作透明计数（`snapshot.bars_out_of_range` / `metrics.bars_out_of_range`），避免区间外低价收盘污染总回报率。
+
 - [修复] `daily_return` 引擎把收益计算绑定到请求区间：只消费快照 `requested_start`~`requested_end` 内的 bars，区间外行只作透明计数（`snapshot.bars_out_of_range` / `metrics.bars_out_of_range`），避免区间外低价收盘污染总回报率。
 
 - [修复] 冻结前逐行校验新增「价格非正」判定：任一 OHLC `<=0` 记为 `non_positive_price`，此类行情不再获得 `verified` 与策略输入资格；`SNAPSHOT_QC_VERSION` 升到 3，使旧快照不再复用升级前的资格结论。

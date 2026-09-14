@@ -9,15 +9,17 @@
   可核对，`limitations` 如实写明「不建模资金/费用/滑点/持仓」。
 """
 
+import json
 import unittest
 from datetime import date, timedelta
 
 from src.repositories.market_snapshot_repo import (
+    SNAPSHOT_QC_VERSION,
     MarketDataSnapshotRepository,
     SnapshotRequest,
 )
 from src.services.backtest_service import BacktestService
-from src.storage import DatabaseManager
+from src.storage import DatabaseManager, MarketDataSnapshot
 
 START = date(2023, 9, 13)
 
@@ -151,6 +153,57 @@ class DailyReturnEngineTestCase(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["date"], "2024-01-05")
         self.assertAlmostEqual(items[0]["simple_return"], 0.1, places=12)
+
+
+    def test_daily_return_revalidates_stale_eligible_snapshot(self) -> None:
+        """旧 QC 版本快照：input_eligibility=true 但 payload 含零价格，须复检拦截。
+
+        直接落库模拟「旧规则下被误判合格」的历史记录：QC 升级只改变新快照身份，
+        不会让旧 snapshot_id 失效，因此引擎必须在执行时按当前规则复检实际数据。
+        """
+        bars = [
+            {"date": START.isoformat(), "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "volume": 1000.0},
+            {"date": (START + timedelta(days=1)).isoformat(), "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0, "volume": 1000.0},
+        ]
+        with self.db.get_session() as session:
+            session.add(MarketDataSnapshot(
+                snapshot_id="f" * 32,
+                instrument="588000",
+                market="cn",
+                interval="daily",
+                requested_start=START,
+                requested_end=START + timedelta(days=1),
+                resolved_start=START,
+                resolved_end=START + timedelta(days=1),
+                rows=2,
+                source="TencentFetcher",
+                price_adjustment="provider_default",
+                currency="CNY",
+                volume_unit="shares",
+                coverage_complete=True,
+                data_quality_status="verified",
+                input_eligibility=True,
+                payload=json.dumps(bars),
+                payload_hash="0" * 64,
+            ))
+            session.commit()
+
+        stats = self.service.run_backtest(
+            code="588000", engine_kind="daily_return", snapshot_id="f" * 32,
+        )
+        record = self.service.get_run(stats["run_id"])
+        evidence = record["evidence"]
+
+        self.assertEqual(record["status"], "partial")
+        self.assertEqual(stats["completed"], 0)
+        self.assertEqual(stats["insufficient"], 1)
+        self.assertIs(evidence["snapshot"]["revalidated"], True)
+        self.assertEqual(
+            evidence["snapshot"]["revalidation_qc_version"], SNAPSHOT_QC_VERSION,
+        )
+        self.assertEqual(
+            evidence["snapshot"]["revalidation_problems"], ["non_positive_price"],
+        )
 
 
     # 门槛：资格、标的、存在性

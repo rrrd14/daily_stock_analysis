@@ -106,6 +106,35 @@ class MarketSnapshotApiTestCase(unittest.TestCase):
         self.assertFalse(payload["input_eligibility"])
 
 
+    def test_run_forwards_engine_kind_and_snapshot_id(self) -> None:
+        from src.services.backtest_service import BacktestService
+
+        snapshot_id = self.snapshot["snapshot_id"]
+        with self._client() as client:
+            response = client.post("/backtest/run", json={
+                "code": "588000", "engine_kind": "daily_return", "snapshot_id": snapshot_id,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        run_id = response.json()["run_id"]
+
+        record = BacktestService(self.db).get_run(run_id)
+        self.assertEqual(record["engine_kind"], "daily_return")
+        self.assertEqual(record["snapshot_id"], snapshot_id)
+        self.assertEqual(record["evidence"]["kind"], "daily_return")
+        self.assertIs(record["evidence"]["snapshot"]["consumed"], True)
+
+    def test_run_rejects_unimplemented_engine_kind_with_422(self) -> None:
+        with self._client() as client:
+            response = client.post("/backtest/run", json={
+                "code": "588000", "engine_kind": "factor_momentum",
+                "snapshot_id": self.snapshot["snapshot_id"],
+            })
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["detail"]["error"], "invalid_params")
+
+
 class SnapshotBudgetTestCase(unittest.TestCase):
     def setUp(self) -> None:
         DatabaseManager.reset_instance()

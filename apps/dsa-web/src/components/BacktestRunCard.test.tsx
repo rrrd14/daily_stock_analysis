@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BacktestRunCard, ChatBacktestEvidence } from './BacktestRunCard';
 import { backtestApi } from '../api/backtest';
+import type { BacktestRunRecord } from '../types/backtest';
 
 vi.mock('../api/backtest', () => ({ backtestApi: { getRun: vi.fn(), getMarketSnapshot: vi.fn() } }));
 const id = 'a'.repeat(32);
@@ -108,6 +109,23 @@ describe('program execution evidence', () => {
     expect(await screen.findByText(/快照元数据暂不可用/)).toBeInTheDocument();
     expect(block).toHaveTextContent(snapshotId);
     expect(block).not.toHaveTextContent('口径：来源');
+  });
+  it('renders daily_return evidence with a dedicated renderer', async () => {
+    vi.mocked(backtestApi.getRun).mockResolvedValue({
+      run_id: id, status: 'completed', created_at: '2026-09-13', sha256: 'hash',
+      engine_kind: 'daily_return', engine_version: 'v1',
+      evidence: {
+        kind: 'daily_return', parameters: {}, limitations: [],
+        metrics: { bars: 2, observations: 1, total_return: 0.1, annualized_return: null },
+        items: [{ date: '2024-01-05', close: 110, simple_return: 0.1 }],
+      },
+    } as unknown as BacktestRunRecord);
+    render(<BacktestRunCard runId={id} />);
+    const section = await screen.findByLabelText('程序运行证据');
+    expect(section).toHaveTextContent('日收益 10.0000%');
+    expect(section).toHaveTextContent('收盘 110');
+    expect(section).not.toHaveTextContent('这是单条报告评估');
+    expect(backtestApi.getMarketSnapshot).not.toHaveBeenCalled();
   });
   it('does not label a non-report engine as a report evaluation', async () => {
     vi.mocked(backtestApi.getRun).mockResolvedValue({
