@@ -459,6 +459,7 @@ CHANGES_SUMMARY 仍有漂移：顶部写 6 个新提交和 13 项 Docker PASS，
 | --- | --- | --- |
 | 受影响集（8 文件） | `pytest -q`（快照/导出/CI 权限/回测引用/回测服务） | **92 passed**，8.49s |
 | 更广回归面（23 文件） | `pytest -q -m "not network"` | **292 passed**，10.39s |
+| 完整离线套件（整仓，非网络） | `pytest -q -m "not network"`（干净 cache） | **1877 passed**，2 deselected，43 warnings，66.06s，rc=0 |
 | flake8（CI 同口径） | `python -m flake8 . --select=E9,F63,F7,F82` | **0 问题**，rc=0 |
 | 独立复现探针（复刻 §10.3 场景） | `python -X utf8 .claude/reviews/r1-r5-fix/probe.py` | **13 passed / 0 failed**，rc=0 |
 | 前端 | 未改动（沿用上一轮容器内结果） | 47 文件 / 405 passed / 2 skipped |
@@ -475,7 +476,7 @@ CHANGES_SUMMARY 仍有漂移：顶部写 6 个新提交和 13 项 Docker PASS，
 
 ### 11.4 未验证项与回滚
 
-- **未重跑完整离线套件**：本轮改用精确受影响集（92）+ 更广回归面（292）+ 独立探针（13）覆盖，未再跑全量；最近一次全量绿仍是改动前的 1834 passed。
+- **完整离线套件已重跑**：整仓 `-m "not network"` 为 **1877 passed**（2 deselected，43 warnings，66.06s，rc=0），弥补了此前「未重跑全量」的缺口；对比改动前最后一次全量绿 1834 passed，新增用例与改判后仍全绿。
 - 新增 CI 作业（`docker-e2e`）仍未在 GitHub Linux runner 上执行过；容器探针证明了权限与语法，但**未**在真实 runner 上跑完整 E2E（探针镜像内没有 docker，无法复现完整链路，也未捕获 `./script` 的直接退出码）。
 - 未做真实浏览器联调；`count_sessions` 仍以 fake calendar 做确定性测试。
 - 回滚：`git revert 521b6c5`（只影响后端契约、脚本权限、导出入口与文档；快照表结构未变，`SNAPSHOT_QC_VERSION` 只影响身份哈希，历史快照仍可读）。
