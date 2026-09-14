@@ -117,6 +117,42 @@ class DailyReturnEngineTestCase(unittest.TestCase):
 
 
     # ------------------------------------------------------------------
+    def test_daily_return_binds_consumption_to_requested_range(self) -> None:
+        """消费区间绑定：区间外行不计入收益（复现 review 负例，避免低价收盘污染总回报率）。
+
+        请求 2024-01-04~05（收盘 100→110），额外放入 2024-01-03 收盘 1（区间外）。
+        修复后总回报率应为 0.1（10%），而不是把区间外的 1 算进去的 109。
+        """
+        start = date(2024, 1, 4)
+        bars = [
+            {"date": date(2024, 1, 3), "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1000.0},
+            {"date": date(2024, 1, 4), "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0},
+            {"date": date(2024, 1, 5), "open": 110.0, "high": 111.0, "low": 109.0, "close": 110.0, "volume": 1000.0},
+        ]
+        created = self.snapshots.create(SnapshotRequest(
+            instrument="588000", market="cn", bars=bars,
+            source="TencentFetcher", price_adjustment="provider_default",
+            currency="CNY", volume_unit="shares",
+            requested_start=start, requested_end=start + timedelta(days=1),
+        ))
+
+        stats = self.service.run_backtest(
+            code="588000", engine_kind="daily_return", snapshot_id=created["snapshot_id"],
+        )
+        evidence = self.service.get_run(stats["run_id"])["evidence"]
+
+        self.assertEqual(evidence["snapshot"]["bars_consumed"], 2)
+        self.assertEqual(evidence["snapshot"]["bars_out_of_range"], 1)
+        self.assertEqual(evidence["metrics"]["bars"], 2)
+        self.assertEqual(evidence["metrics"]["bars_out_of_range"], 1)
+        self.assertAlmostEqual(evidence["metrics"]["total_return"], 0.1, places=12)
+
+        items = evidence["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["date"], "2024-01-05")
+        self.assertAlmostEqual(items[0]["simple_return"], 0.1, places=12)
+
+
     # 门槛：资格、标的、存在性
     # ------------------------------------------------------------------
     def test_daily_return_requires_an_eligible_snapshot(self) -> None:

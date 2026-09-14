@@ -86,6 +86,16 @@ class ValidateBarsTestCase(unittest.TestCase):
         self.assertEqual(len(result["sessions"]), 2)
 
 
+    def test_non_positive_price_is_reported(self) -> None:
+        bars = [
+            _row(START, open=0.0, high=0.0, low=0.0, close=0.0),
+            _row(START + timedelta(days=1)),
+        ]
+        result = validate_bars(bars)
+        self.assertIn("non_positive_price", result["problems"])
+        self.assertEqual(result["sessions"], [START + timedelta(days=1)])
+
+
 class SnapshotPayloadQualityTestCase(unittest.TestCase):
     """落库门槛：坏数据不得取得 verified / 策略资格。"""
 
@@ -144,6 +154,18 @@ class SnapshotPayloadQualityTestCase(unittest.TestCase):
         self.assertEqual(created["quality"]["coverage"]["counted_sessions"], 2)
         self.assertEqual(created["quality"]["coverage"]["rows"], 5)
 
+
+
+    def test_zero_price_is_not_verified_or_eligible(self) -> None:
+        bars = [
+            _row(START, open=0.0, high=0.0, low=0.0, close=0.0),
+            _row(START + timedelta(days=1)),
+        ]
+        created = self.repo.create(self._request(bars=bars))
+
+        self.assertEqual(created["data_quality_status"], "unknown")
+        self.assertFalse(created["input_eligibility"])
+        self.assertIn("non_positive_price", created["quality"]["missing"])
 
 
 class SnapshotRequirementIdentityTestCase(unittest.TestCase):

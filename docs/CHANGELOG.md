@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] `daily_return` 引擎把收益计算绑定到请求区间：只消费快照 `requested_start`~`requested_end` 内的 bars，区间外行只作透明计数（`snapshot.bars_out_of_range` / `metrics.bars_out_of_range`），避免区间外低价收盘污染总回报率。
+
+- [修复] 冻结前逐行校验新增「价格非正」判定：任一 OHLC `<=0` 记为 `non_positive_price`，此类行情不再获得 `verified` 与策略输入资格；`SNAPSHOT_QC_VERSION` 升到 3，使旧快照不再复用升级前的资格结论。
+
+- [修复] 回测 HTTP 入口声明并转发 `engine_kind` / `snapshot_id`：`BacktestRunRequest` 新增这两个字段并转发到服务层，非法参数（未注册引擎、未知或不合格快照）返回 422 而非 500。
+
+- [修复] Web 回测运行卡片按 `engine_kind` 区分渲染：`daily_return` 用独立渲染器展示总回报率/年化/逐日观测，不再复用报告条目的 `eval_status`/`forward_bars` 结构，未知类型走 JSON 兜底，避免读取 undefined 属性导致渲染崩溃。
+
+- [测试] 新增回归：消费区间绑定、零价格不获资格、HTTP 请求 schema 保留引擎字段。
+
 - [文档] 补充量化信号独立页面交互与数据源请求保护设计，区分规则计算、行情刷新及AI解释，规定共享上游预算、缓存、退避和冷却；尚未实现。
 
 - [文档] 基于 f0abe52 复核收益引擎与上轮修复，修订后续范围为无模型依赖的快速规则信号、按需解释与单标的事件评估；新增详细设计，移除 portfolio/账户回测实施计划，设计尚未实现。

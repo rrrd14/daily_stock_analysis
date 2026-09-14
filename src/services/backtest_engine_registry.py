@@ -69,6 +69,36 @@ def _daily_returns_from_bars(bars: List[Dict[str, Any]]):
     return observations, closes
 
 
+def _bars_within_requested_range(
+    bars: List[Dict[str, Any]],
+    requested_start: Optional[str],
+    requested_end: Optional[str],
+):
+    """把收益计算绑定到请求区间（修复 P1：消费区间必须与验证区间一致）。
+
+    快照 payload 可能保留请求区间外的行（作预热/上下文），但 ``daily_return`` 的
+    总回报率必须只由「声明区间内」的收盘价计算，避免区间外低价收盘污染结果。
+    区间外行不计入观测，只作透明计数；请求区间未声明时不裁剪。
+    """
+    in_range: List[Dict[str, Any]] = []
+    out_of_range = 0
+    for bar in bars:
+        if not isinstance(bar, dict):
+            continue
+        day = str(bar.get("date", ""))[:10]
+        if not day:
+            out_of_range += 1
+            continue
+        if requested_start and day < requested_start:
+            out_of_range += 1
+            continue
+        if requested_end and day > requested_end:
+            out_of_range += 1
+            continue
+        in_range.append(bar)
+    return in_range, out_of_range
+
+
 @register_engine("daily_return")
 def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, Any]:
     """日频回报率引擎：从冻结快照计算日频简单收益率序列与总回报率。
@@ -88,6 +118,13 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
         snapshot["snapshot_id"], detail=True
     )
     bars = detail["bars"] if detail else []
+    # 收益必须只由「声明区间」内的收盘价计算：快照 payload 可能保留区间外行作
+    # 预热/上下文，区间外行不计入观测，只透明计数（修复 P1：消费区间绑定）。
+    bars, bars_out_of_range = _bars_within_requested_range(
+        bars,
+        requested_start=snapshot.get("requested_start"),
+        requested_end=snapshot.get("requested_end"),
+    )
     observations, closes = _daily_returns_from_bars(bars)
 
     first_close = closes[0][1] if closes else None
@@ -107,9 +144,11 @@ def run_daily_return(service, *, code, snapshot, evidence, params) -> Dict[str, 
     evidence["kind"] = "daily_return"
     evidence["snapshot"]["consumed"] = True
     evidence["snapshot"]["bars_consumed"] = len(bars)
+    evidence["snapshot"]["bars_out_of_range"] = bars_out_of_range
     evidence["items"] = observations
     evidence["metrics"] = {
         "bars": len(bars),
+        "bars_out_of_range": bars_out_of_range,
         "observations": len(observations),
         "first_close": first_close,
         "last_close": last_close,

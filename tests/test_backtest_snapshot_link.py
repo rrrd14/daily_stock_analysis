@@ -141,5 +141,17 @@ class BacktestSnapshotLinkTestCase(unittest.TestCase):
             self.assertIsNotNone(dumped[key], msg=f"{key} 被 response_model 剥离")
 
 
+    def test_run_request_schema_preserves_engine_fields(self) -> None:
+        """P2 回归：HTTP 请求 schema 必须声明并保留 engine_kind / snapshot_id。"""
+        from api.v1.schemas.backtest import BacktestRunRequest
+
+        dumped = BacktestRunRequest.model_validate({
+            "engine_kind": "daily_return", "snapshot_id": "a" * 32, "code": "588000",
+        }).model_dump()
+        self.assertEqual(dumped["engine_kind"], "daily_return")
+        self.assertEqual(dumped["snapshot_id"], "a" * 32)
+        self.assertEqual(dumped["code"], "588000")
+
+
 if __name__ == "__main__":
     unittest.main()

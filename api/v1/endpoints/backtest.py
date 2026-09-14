@@ -102,8 +102,15 @@ def run_backtest(
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
             limit=request.limit,
+            snapshot_id=request.snapshot_id,
+            engine_kind=request.engine_kind or BacktestService.ENGINE_KIND_REPORT_EVALUATION,
         )
         return BacktestRunResponse(**stats)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
     except Exception as exc:
         logger.error(f"回测执行失败: {exc}", exc_info=True)
         raise HTTPException(

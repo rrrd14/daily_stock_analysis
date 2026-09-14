@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { backtestApi } from '../api/backtest';
-import type { BacktestRunRecord, MarketSnapshotRecord } from '../types/backtest';
+import type { BacktestRunRecord, DailyReturnEvidenceItem, MarketSnapshotRecord } from '../types/backtest';
 
 /**
  * 快照质量等级的用户可见文案。措辞与服务端 ``assess_data_quality`` 的判定保持一致：
@@ -73,6 +73,24 @@ function FrozenSnapshotBlock({ record, detail, detailFailed }: {
   </div>;
 }
 
+/**
+ * daily_return 引擎的独立证据渲染：只陈列确定性数值（总回报/年化/逐日观测），
+ * 不复用报告条目的 `eval_status`/`forward_bars` 结构，避免读到 undefined 属性。
+ */
+function DailyReturnEvidence({ evidence }: { evidence: NonNullable<BacktestRunRecord['evidence']> }) {
+  const raw = evidence as unknown as { metrics?: Record<string, unknown>; items?: DailyReturnEvidenceItem[] };
+  const metrics = raw.metrics;
+  const items = raw.items ?? [];
+  return <div className="space-y-1">
+    {metrics && <pre className="overflow-auto py-2">{JSON.stringify(metrics, null, 2)}</pre>}
+    {items.length
+      ? <ul>{items.map((item, index) => <li key={item.date ?? index}>
+          {item.date ?? '无日期'} · 收盘 {item.close ?? '未知'} · 日收益 {item.simple_return == null ? '未知' : `${(item.simple_return * 100).toFixed(4)}%`}
+        </li>)}</ul>
+      : <p>没有可展示的收益观测。</p>}
+  </div>;
+}
+
 export function BacktestRunCard({ runId }: { runId: string }) {
   const [state, setState] = useState<{
     id: string; record?: BacktestRunRecord; snapshot?: MarketSnapshotRecord | null;
@@ -125,12 +143,16 @@ export function BacktestRunCard({ runId }: { runId: string }) {
     {evidence?.counts && <p>处理 {evidence.counts.processed} · 写入 {evidence.counts.saved} · 完成 {evidence.counts.completed} · 数据不足 {evidence.counts.insufficient} · 错误 {evidence.counts.errors}</p>}
     <details><summary className="cursor-pointer">参数、数据覆盖与原始证据</summary>
       <pre className="overflow-auto py-2">{JSON.stringify(evidence?.parameters, null, 2)}</pre>
-      <ul>{evidence?.items.map(item => <li key={item.analysis_history_id}>
-        {item.code} #{item.analysis_history_id} · {item.result.eval_status} · 后续行情 {item.forward_bars.length}/{item.requested_forward_bars} 条
-        · {item.start_bar?.date ?? '无起始行情'} 至 {item.forward_bars.at(-1)?.date ?? '无后续行情'}
-        {item.start_date_matches_request === false && ' · 起始行情早于分析日，需检查是否为正常休市或陈旧数据'}
-        · 来源：{[...new Set([item.start_bar?.data_source, ...item.forward_bars.map(bar => bar.data_source)].map(source => source || '未知'))].join(', ')}
-      </li>)}</ul>
+      {isReportEvaluation
+        ? <ul>{(evidence?.items ?? []).map(item => <li key={item.analysis_history_id}>
+              {item.code} #{item.analysis_history_id} · {item.result.eval_status} · 后续行情 {item.forward_bars.length}/{item.requested_forward_bars} 条
+              · {item.start_bar?.date ?? '无起始行情'} 至 {item.forward_bars.at(-1)?.date ?? '无后续行情'}
+              {item.start_date_matches_request === false && ' · 起始行情早于分析日，需检查是否为正常休市或陈旧数据'}
+              · 来源：{[...new Set([item.start_bar?.data_source, ...item.forward_bars.map(bar => bar.data_source)].map(source => source || '未知'))].join(', ')}
+            </li>)}</ul>
+        : record.engine_kind === 'daily_return' && evidence
+          ? <DailyReturnEvidence evidence={evidence} />
+          : <pre className="overflow-auto">{JSON.stringify(evidence?.items ?? [], null, 2)}</pre>}
       <p className="break-all">SHA256：{record.sha256 ?? '未完成，尚无最终哈希'}</p>
       <p>哈希用于内容核对，不证明数据或模型判断正确。</p>
       <pre className="max-h-80 overflow-auto">{JSON.stringify(evidence, null, 2)}</pre>

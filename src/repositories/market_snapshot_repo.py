@@ -50,10 +50,11 @@ REQUIRED_BAR_COLUMNS = ("open", "high", "low", "close", "volume")
 PRICE_COLUMNS = ("open", "high", "low", "close")
 PAYLOAD_PROBLEMS = (
     "invalid_date", "duplicate_date", "missing_field", "non_finite", "price_relation",
+    "non_positive_price",
 )
 
 # 质量规则版本：判定规则变化时必须让身份随之变化，否则旧快照的布尔结论会被新请求复用。
-SNAPSHOT_QC_VERSION = "2"
+SNAPSHOT_QC_VERSION = "3"
 
 # 覆盖判定容忍度：请求区间端点与真实数据首尾相差在 10 个自然日内仍视为覆盖
 _COVERAGE_TOLERANCE_DAYS = 10
@@ -108,6 +109,7 @@ def validate_bars(
 
     - 日期无法解析 → ``invalid_date``；同一天出现多次 → ``duplicate_date``；
     - 缺 OHLCV 任一字段 → ``missing_field``；NaN/Infinity/非数值 → ``non_finite``；
+    - 价格非正（任一 OHLC ``<= 0``）→ ``non_positive_price``；
     - 价格关系不成立（`high < low`，或 `open`/`close` 落在 `[low, high]` 之外）→ ``price_relation``。
 
     只有**没有任何问题**的行才会进入 ``sessions``：坏行与重复行不能填满覆盖判定，
@@ -145,6 +147,9 @@ def validate_bars(
                 row_problems.add("non_finite")
                 continue
             prices[column] = number
+        for column in PRICE_COLUMNS:
+            if column in prices and prices[column] <= 0:
+                row_problems.add("non_positive_price")
         if len(prices) == len(REQUIRED_BAR_COLUMNS):
             low, high = prices["low"], prices["high"]
             inside = low <= prices["open"] <= high and low <= prices["close"] <= high

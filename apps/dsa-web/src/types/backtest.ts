@@ -23,6 +23,14 @@ export interface BacktestRunResponse {
   errors: number;
 }
 
+/** daily_return 引擎的逐日收益率观测（与报告条目异构，必须区分渲染）。 */
+export interface DailyReturnEvidenceItem {
+  date?: string;
+  close?: number | null;
+  simple_return?: number | null;
+}
+
+
 // Preserve server keys in evidence exports so the canonical SHA256 remains reproducible.
 export interface BacktestRunRecord {
   run_id: string;
